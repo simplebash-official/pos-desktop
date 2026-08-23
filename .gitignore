@@ -1,0 +1,18 @@
+# Environment variables & secrets
+.env
+*.pem
+*_deploy_key*
+*.key
+
+# Operating System & IDE files
+.DS_Store
+.claude/
+.idea/
+.vscode/
+
+# Media & temporary files
+*.png
+*.jpg
+*.jpeg
+*.pdf
+typst-documentation.*

@@ -1,0 +1,9 @@
+[submodule "backend"]
+	path = backend
+	url = git@github.com:jana2u-pos-system/backend.git
+[submodule "document-server"]
+	path = document-server
+	url = git@github.com:jana2u-pos-system/pdf-server.git
+[submodule "frontend"]
+	path = frontend
+	url = git@github.com:mayurasandakalum/jana2u-pos.git
