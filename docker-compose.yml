@@ -1,7 +1,6 @@
 services:
   document-server:
-    build:
-      context: ./document-server
+    image: ghcr.io/jana2u-pos-system/jana2u-document-server:latest
     container_name: jana2u-document-server
     restart: unless-stopped
     healthcheck:
@@ -19,8 +18,7 @@ services:
     # already point at the right absolute container paths.
 
   backend:
-    build:
-      context: ./backend
+    image: ghcr.io/jana2u-pos-system/jana2u-backend:latest
     container_name: jana2u-backend
     restart: unless-stopped
     healthcheck:
@@ -47,11 +45,7 @@ services:
         condition: service_healthy
 
   frontend:
-    build:
-      context: ./frontend
-      args:
-        VITE_API_BASE_URL: ${VITE_API_BASE_URL}
-        VITE_APP_NAME: ${VITE_APP_NAME}
+    image: ghcr.io/jana2u-pos-system/jana2u-frontend:latest
     container_name: jana2u-frontend
     restart: unless-stopped
     depends_on:
