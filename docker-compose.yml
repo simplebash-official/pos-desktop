@@ -34,10 +34,8 @@ services:
       - MONGODB_DB_NAME=${MONGODB_DB_NAME:-}
       - JWT_SECRET=${JWT_SECRET}
       - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS}
-      - SEED_ADMIN_EMAIL=${SEED_ADMIN_EMAIL}
-      - SEED_ADMIN_PASSWORD=${SEED_ADMIN_PASSWORD}
-      - SEED_ADMIN_NAME=${SEED_ADMIN_NAME}
       - RETURN_WINDOW_DAYS=${RETURN_WINDOW_DAYS}
+      - AUTO_SEED=${AUTO_SEED:-true}
       - DOCUMENT_SERVER_URL=http://document-server:8090
       - DOCUMENT_SERVER_API_KEY=${DOCUMENT_SERVER_API_KEY}
     volumes:
@@ -46,6 +44,24 @@ services:
     depends_on:
       document-server:
         condition: service_healthy
+
+  seed:
+    image: ghcr.io/jana2u-pos-system/jana2u-backend:latest
+    container_name: jana2u-seed
+    entrypoint: ["/app/bin/seed_all"]
+    environment:
+      - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///app/data/pos.db?mode=rwc}
+      - MONGODB_URI=${MONGODB_URI:-}
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRY_HOURS=${JWT_EXPIRY_HOURS}
+      - RETURN_WINDOW_DAYS=${RETURN_WINDOW_DAYS}
+      - DOCUMENT_SERVER_URL=http://document-server:8090
+      - DOCUMENT_SERVER_API_KEY=${DOCUMENT_SERVER_API_KEY}
+    volumes:
+      - backend_data:/app/data
+    profiles: ["seed"]
 
   frontend:
     image: ghcr.io/jana2u-pos-system/jana2u-frontend:latest
