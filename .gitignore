@@ -16,3 +16,14 @@
 *.jpeg
 *.pdf
 typst-documentation.*
+
+# Node / Tauri
+node_modules/
+src-tauri/target/
+src-tauri/gen/schemas
+src-tauri/binaries/
+src-tauri/resources/
+
+# Tauri app icons are build inputs, keep them despite the *.png rule above
+!src-tauri/icons/
+!src-tauri/icons/**

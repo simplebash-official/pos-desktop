@@ -1,0 +1,15 @@
+{
+  "name": "jana2u-pos-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tauri desktop bundle of the Jana2U POS frontend + backend + document-server",
+  "scripts": {
+    "tauri": "tauri",
+    "sidecars": "bash scripts/build-sidecars.sh",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
