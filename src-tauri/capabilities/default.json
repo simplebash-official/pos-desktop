@@ -1,0 +1,21 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the splash and main windows, plus permission to run the bundled backend / document-server sidecars.",
+  "windows": ["main", "splashscreen"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:event:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "binaries/jana2u-backend", "sidecar": true },
+        { "name": "binaries/jana2u-document-server", "sidecar": true }
+      ]
+    }
+  ]
+}

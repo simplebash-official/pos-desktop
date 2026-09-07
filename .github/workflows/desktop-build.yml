@@ -1,0 +1,66 @@
+name: desktop-build
+
+# Builds the Tauri desktop bundle for macOS + Windows. Runs on demand and on
+# version tags. Signing is not wired yet (see the plan's Phase 9) — these are
+# unsigned artifacts for internal testing.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+          - os: macos-13
+            triple: x86_64-apple-darwin
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.triple }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            backend
+            document-server
+
+      - name: Install root + frontend deps
+        run: |
+          npm install
+          npm --prefix frontend ci
+
+      - name: Build sidecars + stage Typst assets
+        shell: bash
+        run: bash scripts/build-sidecars.sh
+
+      - name: Build desktop bundle
+        run: npm run tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jana2u-pos-${{ matrix.triple }}
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: warn
