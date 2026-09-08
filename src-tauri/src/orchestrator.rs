@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -331,18 +331,27 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
     )
     .await?;
 
-    reveal_main_window(&app);
+    reveal_main_window(&app)?;
     Ok(())
 }
 
-fn reveal_main_window(app: &AppHandle) {
+/// Create the main window only now — after both services answer their health
+/// check — so the frontend's startup auth probe never races an unready backend.
+fn reveal_main_window(app: &AppHandle) -> Result<(), String> {
+    if app.get_webview_window("main").is_none() {
+        WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            .title("Jana2U POS")
+            .inner_size(1400.0, 900.0)
+            .min_inner_size(1024.0, 640.0)
+            .center()
+            .resizable(true)
+            .build()
+            .map_err(|e| format!("create main window: {e}"))?;
+    }
     if let Some(splash) = app.get_webview_window("splashscreen") {
         let _ = splash.close();
     }
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.set_focus();
-    }
+    Ok(())
 }
 
 /// Startup failed: surface it, then quit (a half-started POS is worse than a

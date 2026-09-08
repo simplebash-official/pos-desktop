@@ -3,6 +3,17 @@ mod orchestrator;
 use orchestrator::Sidecars;
 use tauri::{Manager, RunEvent};
 
+/// Bridge for `public/webview-diagnostics.js` — surfaces webview
+/// console.warn/error and uncaught exceptions in the app log.
+#[tauri::command]
+fn log_webview(level: String, message: String) {
+    match level.as_str() {
+        "error" => log::error!("[webview] {message}"),
+        "warn" => log::warn!("[webview] {message}"),
+        _ => log::info!("[webview] {message}"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -27,6 +38,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![log_webview])
         .manage(Sidecars::default())
         .setup(|app| {
             let handle = app.handle().clone();
