@@ -124,3 +124,37 @@ To pull the latest changes from all service repositories:
 ```bash
 git submodule update --remote --merge
 ```
+
+---
+
+## Releases & Updates
+
+Two independent update channels:
+
+### Web
+
+Pushing to `frontend` / `backend` / `document-server` builds a `:latest` image and
+redeploys (each repo's `deploy.yml`). Browsers pick it up automatically: the running
+app re-checks the service worker every ~15 min and shows an **"Update available"**
+prompt (withheld while a sale is on the till). Clicking **Update now** asks for
+confirmation, then reloads. `Settings → Updates` shows the running version
+(also at `/version.json`) and a manual **Check for updates** button.
+
+### Desktop
+
+Cut a release from this repo:
+
+```bash
+scripts/release.sh 0.2.0      # bumps tauri.conf.json + Cargo.toml + package.json, commits, tags v0.2.0
+git push && git push --tags   # the v* tag starts .github/workflows/desktop-build.yml
+```
+
+CI builds Linux (AppImage/deb), Windows (NSIS) and macOS (dmg), signs the updater
+artifacts, and publishes a GitHub Release + `latest.json` to the **public**
+`jana2u-pos-system/releases` repo. Installed apps check that feed from
+`Settings → Updates`, download, install and relaunch. Local data
+(`%APPDATA%\com.jana2u.pos\` / `~/Library/Application Support/com.jana2u.pos/`) is
+never touched by an update — see `src-tauri/README.md`.
+
+**One-time setup** — see [`.github/RELEASING.md`](.github/RELEASING.md): create the
+public `releases` repo, generate the updater key, and add the three repo secrets.

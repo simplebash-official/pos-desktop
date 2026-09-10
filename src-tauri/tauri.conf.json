@@ -28,9 +28,18 @@
       "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:8080 http://127.0.0.1:8090; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'wasm-unsafe-eval' blob:; worker-src 'self' blob:; font-src 'self' data:; media-src 'self' blob:"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFEOEJBQ0MwRkI4NjM2NjQKUldSa05vYjd3S3lMclFad1hNcW5MK2NCSnhvYnFDUE1RaDQ3czJzL2pSaGo2N0tmeUhmaVN0RkMK",
+      "endpoints": [
+        "https://github.com/jana2u-pos-system/releases/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg", "nsis"],
+    "targets": ["app", "dmg", "nsis", "appimage"],
+    "createUpdaterArtifacts": true,
     "category": "Business",
     "shortDescription": "Point of sale for Jana2U Service Center",
     "longDescription": "Offline-first point-of-sale desktop app for Jana2U — billing, repairs, print jobs, inventory, customers and reports, with the API and document renderer bundled as local services.",
