@@ -1,8 +1,18 @@
 name: desktop-build
 
-# Builds the Tauri desktop bundle for macOS + Windows. Runs on demand and on
-# version tags. Signing is not wired yet (see the plan's Phase 9) — these are
-# unsigned artifacts for internal testing.
+# Builds the Tauri desktop bundle for Linux + Windows + macOS and, on a `v*`
+# tag, publishes a GitHub Release + the Tauri updater manifest (`latest.json`)
+# to the public `jana2u-pos-system/releases` repo.
+#
+# Cut a release with `scripts/release.sh <version>` then `git push --tags`.
+#
+# Required repo secrets:
+#   TAURI_SIGNING_PRIVATE_KEY           minisign private key (from `tauri signer generate`)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password ("" if generated without one)
+#   RELEASES_REPO_TOKEN                  PAT with contents:write on jana2u-pos-system/releases
+#
+# OS-level code signing (Apple notarization, Windows Authenticode) is not wired
+# yet — bundles are unsigned to the OS; the updater artifacts are signed.
 
 on:
   workflow_dispatch:
@@ -10,16 +20,42 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
 jobs:
-  bundle:
+  version-check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tauri.conf.json version: $version"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match tauri.conf.json version $version (run scripts/release.sh)"
+              exit 1
+            fi
+          fi
+
+  build:
+    needs: version-check
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-14
             triple: aarch64-apple-darwin
           - os: macos-13
             triple: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            triple: x86_64-unknown-linux-gnu
           - os: windows-latest
             triple: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
@@ -27,6 +63,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Install Linux bundling dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            patchelf libssl-dev build-essential file
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -56,14 +100,89 @@ jobs:
         shell: bash
         run: bash scripts/build-sidecars.sh
 
-      - name: Build desktop bundle
+      - name: Build desktop bundle (and sign updater artifacts)
         run: npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: jana2u-pos-${{ matrix.triple }}
+          name: bundle-${{ matrix.triple }}
+          if-no-files-found: error
           path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
-            src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: warn
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.app.tar.gz
+            src-tauri/target/release/bundle/**/*.app.tar.gz.sig
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.AppImage.sig
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*-setup.exe
+            src-tauri/target/release/bundle/**/*-setup.exe.sig
+
+  publish:
+    needs: [version-check, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: bundle-*
+
+      - name: Compose release notes
+        shell: bash
+        run: |
+          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          if [ -n "$prev" ]; then
+            echo "Changes since $prev:" > NOTES.md
+            git log --no-merges --pretty='- %s' "$prev..${GITHUB_REF_NAME}" >> NOTES.md
+          else
+            git log --no-merges --pretty='- %s' -20 > NOTES.md
+          fi
+          cat NOTES.md
+
+      - name: Assemble latest.json
+        id: manifest
+        shell: bash
+        run: |
+          files=$(node scripts/ci/build-latest-json.mjs \
+            --artifacts artifacts \
+            --version "${{ needs.version-check.outputs.version }}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --repo jana2u-pos-system/releases \
+            --notes "$(head -c 4000 NOTES.md)" \
+            --out latest.json)
+          echo "Assets to upload:"
+          echo "$files"
+          {
+            echo "files<<EOF"
+            echo "$files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "--- latest.json ---"
+          cat latest.json
+
+      - name: Publish release to jana2u-pos-system/releases
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+        shell: bash
+        run: |
+          mapfile -t assets < <(printf '%s\n' "${{ steps.manifest.outputs.files }}" | sed '/^$/d')
+          if gh release view "${GITHUB_REF_NAME}" --repo jana2u-pos-system/releases >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" --repo jana2u-pos-system/releases --clobber "${assets[@]}"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo jana2u-pos-system/releases \
+              --title "Jana2U POS ${GITHUB_REF_NAME}" \
+              --notes-file NOTES.md \
+              "${assets[@]}"
+          fi

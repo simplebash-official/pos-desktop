@@ -30,3 +30,7 @@ src-tauri/resources/
 # Tauri app icons are build inputs, keep them despite the *.png rule above
 !src-tauri/icons/
 !src-tauri/icons/**
+
+# graphify cross-repo analysis output (per-submodule graphs are the canonical ones)
+graphify-out/
+src-tauri/graphify-out/
