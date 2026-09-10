@@ -51,10 +51,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Apple Silicon only — GitHub's Intel `macos-13` runners are being
+          # retired and their jobs queue for hours. Add `universal-apple-darwin`
+          # (cross-built on this arm runner) later if an Intel Mac shows up.
           - os: macos-14
             triple: aarch64-apple-darwin
-          - os: macos-13
-            triple: x86_64-apple-darwin
           - os: ubuntu-22.04
             triple: x86_64-unknown-linux-gnu
           - os: windows-latest

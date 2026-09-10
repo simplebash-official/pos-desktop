@@ -38,7 +38,6 @@ for (const required of ['artifacts', 'version', 'tag', 'repo', 'out']) {
 // matrix target triple -> Tauri updater platform key + the updater artifact glob
 const TARGETS = [
   { triple: 'aarch64-apple-darwin', key: 'darwin-aarch64', ext: '.app.tar.gz' },
-  { triple: 'x86_64-apple-darwin', key: 'darwin-x86_64', ext: '.app.tar.gz' },
   { triple: 'x86_64-unknown-linux-gnu', key: 'linux-x86_64', ext: '.AppImage' },
   { triple: 'x86_64-pc-windows-msvc', key: 'windows-x86_64', ext: '-setup.exe' },
 ];
