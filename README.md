@@ -142,12 +142,13 @@ confirmation, then reloads. `Settings → Updates` shows the running version
 
 ### Desktop
 
-Cut a release from this repo:
-
-```bash
-scripts/release.sh 0.2.0      # bumps tauri.conf.json + Cargo.toml + package.json, commits, tags v0.2.0
-git push && git push --tags   # the v* tag starts .github/workflows/desktop-build.yml
-```
+Releases are automatic. Merge a Conventional Commit to `main` and
+`.github/workflows/release.yml` does the rest — `feat:` → minor, `fix:`/`perf:` →
+patch, `<type>!` / `BREAKING CHANGE` → bump; `docs`/`chore`/`ci`/`refactor` ship
+nothing. It computes the next version, pulls the three submodules to their latest
+tips, bumps `package.json` (the single source of truth — `src-tauri/tauri.conf.json`
+points its `version` there), commits + tags `vX.Y.Z` on `main`, then builds and
+publishes.
 
 CI builds Linux (AppImage/deb), Windows (NSIS) and macOS (dmg), signs the updater
 artifacts, and publishes a GitHub Release + `latest.json` to the **public**
@@ -156,5 +157,10 @@ artifacts, and publishes a GitHub Release + `latest.json` to the **public**
 (`%APPDATA%\com.jana2u.pos\` / `~/Library/Application Support/com.jana2u.pos/`) is
 never touched by an update — see `src-tauri/README.md`.
 
+Emergency / offline path: `scripts/release.sh --auto --bump-submodules` then
+`git push && git push origin v<ver>`. Full runbook in
+[`RELEASE.md`](RELEASE.md).
+
 **One-time setup** — see [`.github/RELEASING.md`](.github/RELEASING.md): create the
-public `releases` repo, generate the updater key, and add the three repo secrets.
+public `releases` repo, generate the updater key, and add the repo secrets. (No
+branch-protection change needed unless `main` later gets a restrictive ruleset.)
