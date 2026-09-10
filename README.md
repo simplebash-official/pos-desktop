@@ -161,6 +161,6 @@ Emergency / offline path: `scripts/release.sh --auto --bump-submodules` then
 `git push && git push origin v<ver>`. Full runbook in
 [`RELEASE.md`](RELEASE.md).
 
-**One-time setup** — see [`.github/RELEASING.md`](.github/RELEASING.md): let the
-Actions bot bypass the `main` ruleset, create the public `releases` repo, generate
-the updater key, and add the repo secrets.
+**One-time setup** — see [`.github/RELEASING.md`](.github/RELEASING.md): create the
+public `releases` repo, generate the updater key, and add the repo secrets. (No
+branch-protection change needed unless `main` later gets a restrictive ruleset.)

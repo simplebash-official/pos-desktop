@@ -18,8 +18,10 @@ name: release
 # the "[skip ci]" marker and the "no releasable commits since the new tag" check
 # are extra guards.
 #
-# PREREQUISITE: the `main` branch ruleset must let `github-actions[bot]` bypass
-# it (Settings -> Rules -> main -> Bypass list), otherwise the push fails GH006.
+# The commit + tag push to `main` works as-is on a Free org / private repo (no
+# enforced protection). If `main` ever gets a restrictive ruleset (Team plan or
+# public repo), let `github-actions[bot]` bypass it (Settings -> Rules -> main ->
+# Bypass list) or the push fails GH006. See .github/RELEASING.md.
 #
 # Manual / emergency path is unchanged: scripts/release.sh <ver> then
 # `git push origin v<ver>` -> desktop-build.yml via its `push: tags: v*` trigger.
