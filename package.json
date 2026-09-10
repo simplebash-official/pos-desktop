@@ -7,7 +7,14 @@
     "tauri": "tauri",
     "sidecars": "bash scripts/build-sidecars.sh",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "tauri build",
+    "build:desktop": "npm run sidecars && npm run build",
+    "env:desktop": "cp .env.desktop.example .env",
+    "env:web": "cp .env.web.example .env",
+    "web:build": "docker compose --env-file .env.web build",
+    "web:up": "docker compose --env-file .env.web up -d",
+    "web:down": "docker compose --env-file .env.web down",
+    "web:logs": "docker compose --env-file .env.web logs -f"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

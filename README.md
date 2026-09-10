@@ -12,57 +12,95 @@ Full-stack POS (Point of Sale) system orchestrated via Docker Compose.
 
 ---
 
-## Getting Started
+---
 
-### 1. Clone with Submodules
-To clone this orchestrator repository and pull all 3 services at once:
+## Build & Deployment Environments
 
+Jana2U POS supports two distinct operational environments:
+
+1. **Desktop App (Tauri + SQLite)**:
+   - Standalone offline POS cashier terminal.
+   - Bundles backend & document-server as local sidecar processes on loopback (`127.0.0.1`).
+   - Uses embedded local SQLite database files (stored in OS user AppData directory).
+   - Zero external network dependencies.
+
+2. **Web & Server Deployment (Docker Compose + MongoDB)**:
+   - Multi-terminal network deployment accessible via web browsers.
+   - Core API connects to a MongoDB cluster (e.g. MongoDB Atlas) or an optional containerized Mongo service.
+   - Frontend SPA is served behind an Nginx reverse proxy routing `/api` to the backend.
+
+---
+
+## 1. Desktop Build Workflow (Tauri + SQLite)
+
+### Setup & Development
 ```bash
-git clone --recurse-submodules <REPO_URL> jana2u-pos
-cd jana2u-pos
+# 1. Switch to desktop environment configuration
+npm run env:desktop
+
+# 2. Build local sidecar binaries (backend + document-server)
+npm run sidecars
+
+# 3. Launch Tauri in development mode
+npm run dev
 ```
 
-*(If you already cloned without `--recurse-submodules`, initialize them with:)*
+### Building the Desktop Installer
 ```bash
-git submodule update --init --recursive
+npm run build:desktop
+# Outputs desktop installers (.dmg / .app on macOS, NSIS .exe on Windows) to src-tauri/target/release/bundle/
 ```
 
-### 2. Configure Environment Variables
-Copy the example environment file and fill in your secrets:
+---
 
+## 2. Web & Server Deployment (Docker Compose + MongoDB)
+
+### Setup & Configuration
 ```bash
-cp .env.example .env
+# 1. Switch to web environment configuration
+npm run env:web
+
+# 2. Open .env and set your MongoDB URI & production secrets:
+#    - MONGODB_URI (e.g. your MongoDB Atlas cluster URI)
+#    - MONGODB_DB_NAME=jana2u_pos_prod
+#    - JWT_SECRET (generate via: openssl rand -hex 32)
+#    - DOCUMENT_SERVER_API_KEY (generate via: openssl rand -hex 32)
 ```
 
-Ensure `MONGODB_URI` points to your MongoDB instance (e.g. MongoDB Atlas), and `DOCUMENT_SERVER_API_KEY` matches between services.
-
-### 3. Start the Stack
-
-Build and start all services in detached mode:
-
+### Start the Web Stack
 ```bash
-docker compose up -d --build
+# Start all containers in detached mode
+npm run web:up
+# (Equivalent to: docker compose --env-file .env.web up -d)
+
+# Follow backend logs to confirm database connection & auto-seeding
+npm run web:logs
 ```
 
-Startup sequence:
-1. `document-server` starts first and performs self-checks.
-2. `backend` starts once `document-server` is healthy.
-3. `frontend` starts once `backend` is healthy.
+> [!TIP]
+> **Optional Self-Hosted MongoDB**:
+> If you prefer running MongoDB directly in Docker rather than using MongoDB Atlas, add `--profile mongo` and set `MONGODB_URI=mongodb://mongo:27017` in `.env.web`:
+> ```bash
+> docker compose --profile mongo --env-file .env.web up -d
+> ```
 
-### 4. Seed First Admin Account (First-time only)
-
-If running against a clean database:
-
+### Stopping the Web Stack
 ```bash
-docker compose exec backend /app/bin/seed_admin
+npm run web:down
 ```
 
-### 5. Access the Services
+---
 
-- **Frontend App**: [http://localhost:8081](http://localhost:8081)
-- **Backend API & Health**: [http://localhost:8080/api/health](http://localhost:8080/api/health)
+## Access Points (Web / Server)
+
+- **Web Frontend**: [http://localhost:8081](http://localhost:8081) (or your configured domain)
+- **Backend Health Check**: [http://localhost:8080/api/health](http://localhost:8080/api/health)
 - **Backend Swagger Docs**: [http://localhost:8080/docs](http://localhost:8080/docs)
 - **Document Server Health**: [http://localhost:8090/api/health](http://localhost:8090/api/health)
+
+Default initial admin bootstrapped by seeder:
+- **Email**: `admin@pos.com`
+- **Password**: `admin@1234`
 
 ---
 
