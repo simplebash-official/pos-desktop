@@ -1,106 +1,67 @@
 # Making a release
 
-Two independent things ship separately:
+Two things ship separately:
 
 - **Web** (`frontend` / `backend` / `document-server`) — deploys **automatically** on every
-  push to the repo's default branch. No release needed. Browsers pick it up within ~15 min
+  push to each repo's default branch. No release needed. Browsers pick it up within ~15 min
   (the "Update available" prompt) or via **Settings → Updates**.
-- **Desktop** (this `compose` repo) — ships only when **you cut a `v*` tag**. That's what the
-  rest of this file is about.
+- **Desktop** (this `compose` repo) — ships **automatically** when a release-worthy commit
+  lands on `main`. The rest of this file is about that.
 
-The desktop app bundles *pinned* commits of the three submodules, so a web change is **not**
-in the desktop app until you bump the pin and cut a release.
-
----
-
-## 1. Make the change in the right repo
-
-### A change to the UI / API / PDF templates
-
-```bash
-cd frontend            # or backend  (branch: master)  or document-server
-git checkout -b my-change
-# ... edit, run the repo's test gate ...
-git add -A && git commit -m "feat: ..."
-git push -u origin my-change
-```
-
-Open a PR on GitHub, review, **merge to the default branch**. The web deploy runs itself.
-
-### A change to the desktop shell only (`src-tauri/`, orchestrator, CI)
-
-```bash
-cd ~/Documents/projects/personal/jana2u-pos      # the compose repo
-git checkout -b my-change
-# ... edit src-tauri/... ...
-git add -A && git commit -m "..."
-git push -u origin my-change
-```
-
-PR → merge to `main`.
+The desktop app bundles *pinned* commits of the three submodules; the release pipeline pulls
+them to their latest tracked branch tip as part of every release, so a merged web change is in
+the next desktop release automatically.
 
 ---
 
-## 2. Point the compose repo at the merged changes
+## The whole thing
 
-```bash
-cd ~/Documents/projects/personal/jana2u-pos
-git checkout main && git pull
+1. Make your change in the right repo, on a branch, and open a PR.
+   - UI / API / PDF templates → `frontend` (branch `main`), `backend` (branch `master`), or
+     `document-server` (branch `main`).
+   - Desktop shell / orchestrator / CI → this `compose` repo (branch `main`).
+2. **Write the commit (or PR title, if you squash-merge) as a Conventional Commit:**
 
-# pull the latest merged commit of whichever submodules changed:
-git submodule update --remote frontend           # and/or backend, document-server
-git submodule status                             # confirm the pins moved
+   | prefix | effect | version bump |
+   |---|---|---|
+   | `feat: …` | new feature | minor (`0.2.x → 0.3.0`) |
+   | `fix: …` / `perf: …` | bug fix / perf | patch (`0.2.1 → 0.2.2`) |
+   | `feat!: …` or a `BREAKING CHANGE:` footer | breaking | minor while `< 1.0`, else major |
+   | `docs:` `chore:` `ci:` `refactor:` `test:` `build:` `style:` | — | **no release** |
 
-git add frontend backend document-server         # only the ones that changed
-git commit -m "chore: bump submodules for release"
-git push
-```
+3. Merge to the default branch.
+   - A web repo → the web deploy runs itself.
+   - This `compose` repo → `.github/workflows/release.yml` runs. If your commit was
+     `feat:` / `fix:` / `perf:` / breaking, it:
+     1. computes the next version,
+     2. pulls `frontend` + `backend` + `document-server` to their latest tips,
+     3. bumps `package.json`,
+     4. commits `chore(release): vX.Y.Z [skip ci]` + tags `vX.Y.Z` on `main`,
+     5. builds macOS + Linux + Windows and publishes the GitHub Release + `latest.json` to
+        `jana2u-pos-system/releases`.
 
-If you **only** changed `src-tauri/`, skip the submodule bump — just `git checkout main && git pull`.
+That's it. No script, no manual tag.
 
----
-
-## 3. Cut the release
-
-```bash
-cd ~/Documents/projects/personal/jana2u-pos
-git checkout main && git pull
-git status                        # MUST be clean — release.sh refuses a dirty tree
-
-scripts/release.sh 0.2.2          # see "Version numbers" below
-```
-
-`release.sh` bumps `tauri.conf.json` + `Cargo.toml` + `package.json` to the same version,
-commits `release: v0.2.2`, and creates the annotated tag `v0.2.2`. It does **not** push.
-
----
-
-## 4. Review, then push
-
-```bash
-git show v0.2.2                   # sanity-check: 4 files, version numbers only
-
-git push                         # the release commit
-git push origin v0.2.2           # the tag  ← THIS starts the build
-```
-
-> Push the tag as `git push origin v0.2.2`, not `git push --tags` (and never with a
-> trailing `.` — that's a git syntax error).
+> **Only changed a web repo?** You still need one releasable commit on `compose` to ship a
+> desktop build (the release pipeline picks up the newer submodule tips regardless). Merge a
+> `fix:`/`feat:` there, or push an empty one: `git commit --allow-empty -m "fix: pull latest
+> submodules" && git push`.
 
 ---
 
-## 5. Watch (~25 min)
+## Watch (~25 min)
 
 <https://github.com/jana2u-pos-system/compose/actions>
 
-`version-check` → `build` ×3 (macOS Apple Silicon · Linux · Windows) → `publish`.
+`release / prepare` → `desktop-build / version-check` → `build` ×3 (macOS Apple Silicon ·
+Linux · Windows) → `publish`.
 
 `publish` creates the GitHub Release + `latest.json` on
 <https://github.com/jana2u-pos-system/releases>.
 
 ---
 
-## 6. Verify
+## Verify
 
 ```bash
 curl -sL https://github.com/jana2u-pos-system/releases/releases/latest/download/latest.json | jq .version
@@ -115,37 +76,39 @@ updates** → it offers the new version → download → install → restart. Sa
 
 ## Version numbers
 
-`scripts/release.sh X.Y.Z`:
+`package.json` is the single source of truth. `src-tauri/tauri.conf.json` points its
+`"version"` at `../package.json`; the Rust side reads it at runtime. **Never hand-edit the
+version** — the pipeline (or `scripts/release.sh`) owns it.
 
-| bump | when | example |
-|---|---|---|
-| patch | bug fixes | `0.2.1 → 0.2.2` |
-| minor | new features | `0.2.x → 0.3.0` |
-| major | breaking / milestone | `0.x → 1.0.0` |
-
-Never hand-edit the version anywhere — always go through `scripts/release.sh`.
+`src-tauri/Cargo.toml` `version` is intentionally frozen and no longer tracks the app version.
 
 ---
 
-## The whole thing, once changes are merged
+## Emergency / offline release
+
+When CI can't do it (offline, Actions outage, or you must pin specific submodule commits):
 
 ```bash
 cd ~/Documents/projects/personal/jana2u-pos
 git checkout main && git pull
-git submodule update --remote frontend backend document-server
-git add frontend backend document-server && git commit -m "chore: bump submodules"
-scripts/release.sh 0.2.2
-git show v0.2.2
-git push && git push origin v0.2.2
+git status                                  # must be clean
+
+scripts/release.sh --auto --bump-submodules # or: scripts/release.sh 0.2.2
+git show v0.2.2                             # sanity-check
+git push && git push origin v0.2.2         # the tag push starts the build + publish
 ```
+
+`scripts/release.sh` bumps `package.json`, optionally pulls the submodules, commits
+`chore(release): v0.2.2`, and tags `v0.2.2`. It does **not** push. The tag push triggers
+`.github/workflows/desktop-build.yml` via its `push: tags: v*` trigger.
 
 ---
 
 ## Notes
 
-- **First launch of a downloaded build is blocked** (unsigned): macOS "damaged" →
+- **First launch of a browser-downloaded build is blocked** (unsigned): macOS "damaged" →
   `xattr -dr com.apple.quarantine "/Applications/Jana2U POS.app"`; Windows SmartScreen →
   More info → Run anyway. In-app updates after that are clean. See `.github/RELEASING.md`.
-- **`workflow_dispatch`** (Actions → desktop-build → Run workflow) builds all 3 platforms
-  **without** publishing — use it to check a build before tagging.
+- **`workflow_dispatch`** (Actions → desktop-build → Run workflow) builds all 3 platforms;
+  it publishes only if you tick `publish`. Use it to check a build.
 - One-time CI setup (secrets, the releases repo) lives in `.github/RELEASING.md`.

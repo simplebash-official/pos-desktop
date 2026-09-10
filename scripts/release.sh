@@ -1,25 +1,54 @@
 #!/usr/bin/env bash
-# Cut a new desktop release.
+# Emergency / offline desktop release.
 #
-#   scripts/release.sh 0.2.0
+#   scripts/release.sh 0.2.2                    # explicit version
+#   scripts/release.sh --auto                   # compute from conventional commits
+#   scripts/release.sh --auto --bump-submodules # also pull frontend/backend/document-server
 #
-# Sets the version in the three files that must agree, commits, and creates the
-# annotated tag `v<version>`. Pushing that tag is what starts
-# `.github/workflows/desktop-build.yml`, which builds every OS and publishes the
-# GitHub Release + `latest.json` to `jana2u-pos-system/releases`.
+# The normal path is automatic: merge a `feat:` / `fix:` / `perf:` / breaking
+# commit to `main` and `.github/workflows/release.yml` does all of this in CI.
+# Use this script only when CI can't (offline, Actions outage, a release that
+# must pin specific submodule commits).
 #
-# It does NOT push — review `git show` first, then:
-#   git push && git push --tags
+# It bumps package.json (the single source of truth — tauri.conf.json points at
+# it), commits `chore(release): v<version>`, and creates the annotated tag
+# `v<version>`. It does NOT push. Review, then:
+#
+#   git show v<version>
+#   git push && git push origin v<version>
+#
+# The tag push starts `.github/workflows/desktop-build.yml` via its `push: tags`
+# trigger, which builds every OS and publishes the GitHub Release + `latest.json`
+# to `jana2u-pos-system/releases`.
 set -euo pipefail
 
-VERSION="${1:-}"
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "usage: scripts/release.sh <major.minor.patch>   (e.g. 0.2.0)" >&2
-  exit 1
-fi
+VERSION=""
+BUMP_SUBMODULES=0
+for arg in "$@"; do
+  case "$arg" in
+    --auto) VERSION="__AUTO__" ;;
+    --bump-submodules) BUMP_SUBMODULES=1 ;;
+    -*) echo "unknown flag: $arg" >&2; exit 1 ;;
+    *) VERSION="$arg" ;;
+  esac
+done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+if [[ "$VERSION" == "__AUTO__" ]]; then
+  VERSION="$(scripts/ci/next-version.sh --dry-run)"
+  if [[ "$VERSION" == "none" ]]; then
+    echo "no releasable commits since the last v* tag — nothing to do" >&2
+    exit 1
+  fi
+  echo "computed version: $VERSION"
+fi
+
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "usage: scripts/release.sh <major.minor.patch> | --auto   [--bump-submodules]" >&2
+  exit 1
+fi
 
 TAG="v${VERSION}"
 if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
@@ -31,33 +60,18 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-# Surgical version bump — replace only the version string in each file, byte-for-
-# byte everything else (a JSON round-trip would reflow arrays and escape non-ASCII).
-python3 - "$VERSION" <<'PY'
-import re, sys
+if [[ "$BUMP_SUBMODULES" -eq 1 ]]; then
+  echo "pulling submodules to their tracked branches..."
+  git submodule update --init --remote -- frontend backend document-server
+  git submodule status
+fi
 
-version = sys.argv[1]
-targets = [
-    ("src-tauri/tauri.conf.json", r'("version":\s*)"[^"]*"'),   # top-level, first match
-    ("package.json", r'("version":\s*)"[^"]*"'),                 # top-level, first match
-    ("src-tauri/Cargo.toml", r'(?m)^(version\s*=\s*)"[^"]*"'),   # [package], first match
-]
-for path, pattern in targets:
-    src = open(path).read()
-    out, n = re.subn(pattern, lambda m: f'{m.group(1)}"{version}"', src, count=1)
-    if n != 1:
-        sys.exit(f"{path}: expected exactly 1 version match, found {n}")
-    open(path, "w").write(out)
-    print("updated", path)
-PY
+python3 "$ROOT/scripts/set-version.py" "$VERSION"
 
-# keep Cargo.lock in step so CI doesn't have a dirty tree
-( cd src-tauri && cargo update -p jana2u-pos-desktop --precise "$VERSION" >/dev/null 2>&1 || true )
-
-git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock package.json
-git commit -m "release: v${VERSION}"
+git add package.json frontend backend document-server
+git commit -m "chore(release): ${TAG}"
 git tag -a "${TAG}" -m "Jana2U POS desktop ${TAG}"
 
 echo
 echo "Committed and tagged ${TAG}. Review with:  git show ${TAG}"
-echo "Then publish with:                          git push && git push --tags"
+echo "Then publish with:                          git push && git push origin ${TAG}"

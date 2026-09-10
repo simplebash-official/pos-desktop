@@ -1,10 +1,17 @@
 name: desktop-build
 
-# Builds the Tauri desktop bundle for Linux + Windows + macOS and, on a `v*`
-# tag, publishes a GitHub Release + the Tauri updater manifest (`latest.json`)
-# to the public `jana2u-pos-system/releases` repo.
+# Builds the Tauri desktop bundle for Linux + Windows + macOS and, when asked to,
+# publishes a GitHub Release + the Tauri updater manifest (`latest.json`) to the
+# public `jana2u-pos-system/releases` repo.
 #
-# Cut a release with `scripts/release.sh <version>` then `git push --tags`.
+# Three ways in:
+#   workflow_call   — `.github/workflows/release.yml` calls this after it has
+#                     computed + committed + tagged the new version on `main`.
+#                     This is the normal path (release-on-push-to-main).
+#   workflow_dispatch — manual pre-flight: builds all 3 OSes, publishes only if
+#                     you tick `publish`.
+#   push: tags: v*  — emergency / offline path: `scripts/release.sh <ver>` then
+#                     `git push origin v<ver>` → build + publish.
 #
 # Required repo secrets:
 #   CI_SUBMODULE_TOKEN                  PAT, Contents:read on backend + pdf-server + frontend + compose
@@ -16,7 +23,30 @@ name: desktop-build
 # yet — bundles are unsigned to the OS; the updater artifacts are signed.
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to build (X.Y.Z). Required — the caller has already bumped package.json to this."
+        type: string
+        required: true
+      publish:
+        description: "Publish the GitHub Release + latest.json after building."
+        type: boolean
+        default: false
+      ref:
+        description: "Git ref to check out (e.g. the release tag). Defaults to the triggering ref."
+        type: string
+        default: ""
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the GitHub Release + latest.json after building."
+        type: boolean
+        default: false
+      ref:
+        description: "Git ref to check out. Defaults to the branch the run was started from."
+        type: string
+        default: ""
   push:
     tags:
       - "v*"
@@ -31,19 +61,40 @@ jobs:
       version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - id: v
         shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tauri.conf.json version: $version"
-          if [ "${{ github.event_name }}" = "push" ]; then
-            tag="${GITHUB_REF_NAME#v}"
-            if [ "$tag" != "$version" ]; then
-              echo "::error::tag ${GITHUB_REF_NAME} does not match tauri.conf.json version $version (run scripts/release.sh)"
+          # package.json is the single source of truth. tauri.conf.json points at
+          # it (`"version": "../package.json"`), so resolve rather than read raw.
+          pkg=$(node -p "require('./package.json').version")
+          resolved=$(node -p "
+            const c = require('./src-tauri/tauri.conf.json');
+            (typeof c.version === 'string' && c.version.endsWith('package.json'))
+              ? require('./package.json').version : c.version")
+          if [ "$resolved" != "$pkg" ]; then
+            echo "::error::src-tauri/tauri.conf.json resolves to $resolved but package.json is $pkg"
+            exit 1
+          fi
+
+          version="${INPUT_VERSION:-$pkg}"
+          if [ "$version" != "$pkg" ]; then
+            echo "::error::caller asked for $version but package.json is $pkg (was it committed?)"
+            exit 1
+          fi
+
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+              echo "::error::tag ${GITHUB_REF_NAME} does not match version $version (run scripts/release.sh)"
               exit 1
             fi
           fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "version: $version"
 
   build:
     needs: version-check
@@ -64,6 +115,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
           # The built-in GITHUB_TOKEN can't read the sibling private repos
           # (backend / pdf-server / frontend). CI_SUBMODULE_TOKEN is a
@@ -129,12 +181,18 @@ jobs:
 
   publish:
     needs: [version-check, build]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: ${{ inputs.publish || startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    env:
+      TAG: v${{ needs.version-check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags --force
 
       - uses: actions/setup-node@v4
         with:
@@ -149,9 +207,9 @@ jobs:
         shell: bash
         run: |
           # CHANGELOG.md — just the commit list, fed to latest.json ("what's new")
-          prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          prev=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
           if [ -n "$prev" ]; then
-            git log --no-merges --pretty='- %s' "$prev..${GITHUB_REF_NAME}" > CHANGELOG.md
+            git log --no-merges --pretty='- %s' "$prev..${TAG}" > CHANGELOG.md
           else
             git log --no-merges --pretty='- %s' -15 > CHANGELOG.md
           fi
@@ -189,7 +247,7 @@ jobs:
           files=$(node scripts/ci/build-latest-json.mjs \
             --artifacts artifacts \
             --version "${{ needs.version-check.outputs.version }}" \
-            --tag "${GITHUB_REF_NAME}" \
+            --tag "${TAG}" \
             --repo jana2u-pos-system/releases \
             --notes "$(head -c 2000 CHANGELOG.md)" \
             --out latest.json)
@@ -209,12 +267,12 @@ jobs:
         shell: bash
         run: |
           mapfile -t assets < <(printf '%s\n' "${{ steps.manifest.outputs.files }}" | sed '/^$/d')
-          if gh release view "${GITHUB_REF_NAME}" --repo jana2u-pos-system/releases >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" --repo jana2u-pos-system/releases --clobber "${assets[@]}"
+          if gh release view "${TAG}" --repo jana2u-pos-system/releases >/dev/null 2>&1; then
+            gh release upload "${TAG}" --repo jana2u-pos-system/releases --clobber "${assets[@]}"
           else
-            gh release create "${GITHUB_REF_NAME}" \
+            gh release create "${TAG}" \
               --repo jana2u-pos-system/releases \
-              --title "Jana2U POS ${GITHUB_REF_NAME}" \
+              --title "Jana2U POS ${TAG}" \
               --notes-file NOTES.md \
               "${assets[@]}"
           fi
