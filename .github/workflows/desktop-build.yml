@@ -49,6 +49,9 @@ jobs:
           npm install
           npm --prefix frontend ci
 
+      - name: Configure desktop environment
+        run: npm run env:desktop
+
       - name: Build sidecars + stage Typst assets
         shell: bash
         run: bash scripts/build-sidecars.sh

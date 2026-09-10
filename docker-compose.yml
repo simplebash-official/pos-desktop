@@ -99,9 +99,30 @@ services:
     entrypoint: >
       sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h; done;'
 
+  # Optional self-hosted MongoDB service.
+  # Enable by adding `--profile mongo` to docker compose, e.g.:
+  #   docker compose --profile mongo --env-file .env.web up -d
+  # And setting `MONGODB_URI=mongodb://mongo:27017` in .env.web.
+  mongo:
+    image: mongo:7.0
+    container_name: jana2u-mongo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    profiles: ["mongo"]
+
 volumes:
   document_data:
   generated_documents:
   backend_data:
+  mongo_data:
   certbot_certs:
   certbot_www:
