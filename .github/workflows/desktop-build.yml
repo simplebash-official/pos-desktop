@@ -148,13 +148,38 @@ jobs:
       - name: Compose release notes
         shell: bash
         run: |
+          # CHANGELOG.md — just the commit list, fed to latest.json ("what's new")
           prev=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
           if [ -n "$prev" ]; then
-            echo "Changes since $prev:" > NOTES.md
-            git log --no-merges --pretty='- %s' "$prev..${GITHUB_REF_NAME}" >> NOTES.md
+            git log --no-merges --pretty='- %s' "$prev..${GITHUB_REF_NAME}" > CHANGELOG.md
           else
-            git log --no-merges --pretty='- %s' -20 > NOTES.md
+            git log --no-merges --pretty='- %s' -15 > CHANGELOG.md
           fi
+
+          # NOTES.md — the GitHub Release body: install steps + the changelog.
+          # The bundles are not signed by Apple / Microsoft yet, so first launch
+          # after a browser download is blocked by Gatekeeper / SmartScreen.
+          cat > NOTES.md <<'EOF'
+          ## Installing
+
+          **macOS** — after moving the app to Applications, run once in Terminal:
+          ```
+          xattr -dr com.apple.quarantine "/Applications/Jana2U POS.app"
+          ```
+          then open it. (Without this, macOS says the app "is damaged" — it isn't;
+          the app just isn't Apple-notarized yet.)
+
+          **Windows** — SmartScreen shows "unknown publisher" → **More info → Run anyway**.
+
+          **Updates** — once installed, use **Settings → Updates** inside the app.
+          In-app updates are not quarantined, so they install without these prompts.
+
+          ---
+
+          ## Changes
+
+          EOF
+          cat CHANGELOG.md >> NOTES.md
           cat NOTES.md
 
       - name: Assemble latest.json
@@ -166,7 +191,7 @@ jobs:
             --version "${{ needs.version-check.outputs.version }}" \
             --tag "${GITHUB_REF_NAME}" \
             --repo jana2u-pos-system/releases \
-            --notes "$(head -c 4000 NOTES.md)" \
+            --notes "$(head -c 2000 CHANGELOG.md)" \
             --out latest.json)
           echo "Assets to upload:"
           echo "$files"
