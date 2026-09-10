@@ -26,5 +26,7 @@ tauri-plugin-log = "2"
 tauri-plugin-shell = "2.3.6"
 tauri-plugin-single-instance = "2.4.4"
 tauri-plugin-dialog = "2.7.3"
+tauri-plugin-process = "2"
+tauri-plugin-updater = "2"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal"] }
 rand = "0.8"
