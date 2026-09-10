@@ -1,6 +1,6 @@
 [package]
 name = "jana2u-pos-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tauri desktop bundle of the Jana2U POS frontend + backend + document-server"
 authors = ["Jana2U"]
 license = ""
