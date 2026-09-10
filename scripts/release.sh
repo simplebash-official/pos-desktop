@@ -31,32 +31,24 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-# tauri.conf.json — the version the updater compares and the release is named for
-tmp="$(mktemp)"
-python3 - "$VERSION" > "$tmp" <<'PY'
-import json, sys
-p = "src-tauri/tauri.conf.json"
-d = json.load(open(p))
-d["version"] = sys.argv[1]
-json.dump(d, open(p, "w"), indent=2)
-open(p, "a").write("\n")
-print("updated", p)
-PY
-cat "$tmp"; rm -f "$tmp"
-
-# src-tauri/Cargo.toml — first `version = "..."` under [package]
-perl -0pi -e 's/^(version\s*=\s*)"[^"]+"/$1"'"$VERSION"'"/m if !$done++' src-tauri/Cargo.toml
-echo "updated src-tauri/Cargo.toml"
-
-# root package.json
+# Surgical version bump — replace only the version string in each file, byte-for-
+# byte everything else (a JSON round-trip would reflow arrays and escape non-ASCII).
 python3 - "$VERSION" <<'PY'
-import json, sys
-p = "package.json"
-d = json.load(open(p))
-d["version"] = sys.argv[1]
-json.dump(d, open(p, "w"), indent=2)
-open(p, "a").write("\n")
-print("updated", p)
+import re, sys
+
+version = sys.argv[1]
+targets = [
+    ("src-tauri/tauri.conf.json", r'("version":\s*)"[^"]*"'),   # top-level, first match
+    ("package.json", r'("version":\s*)"[^"]*"'),                 # top-level, first match
+    ("src-tauri/Cargo.toml", r'(?m)^(version\s*=\s*)"[^"]*"'),   # [package], first match
+]
+for path, pattern in targets:
+    src = open(path).read()
+    out, n = re.subn(pattern, lambda m: f'{m.group(1)}"{version}"', src, count=1)
+    if n != 1:
+        sys.exit(f"{path}: expected exactly 1 version match, found {n}")
+    open(path, "w").write(out)
+    print("updated", path)
 PY
 
 # keep Cargo.lock in step so CI doesn't have a dirty tree
