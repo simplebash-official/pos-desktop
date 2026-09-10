@@ -3,6 +3,23 @@
 `.github/workflows/desktop-build.yml` builds every OS and publishes a GitHub
 Release + the Tauri updater manifest (`latest.json`) on every `v*` tag push.
 
+## Unsigned bundles — first-launch friction
+
+OS code signing is deferred, so a **browser-downloaded** bundle is blocked on
+first launch:
+
+- **macOS** → *"Jana2U POS.app" is damaged and can't be opened.* It is not
+  damaged — macOS quarantines un-notarized apps. Fix once per install:
+  `xattr -dr com.apple.quarantine "/Applications/Jana2U POS.app"`.
+- **Windows** → SmartScreen "unknown publisher" → *More info → Run anyway*.
+
+The in-app updater (`Settings → Updates`) downloads updates programmatically,
+which are **not** quarantined — so every update after the first install is
+clean. The release notes on each GitHub Release repeat these steps.
+
+To remove this entirely: Apple Developer ID + notarization and a Windows
+Authenticode cert, wired into `desktop-build.yml`.
+
 ## One-time setup
 
 ### 1. Create the public releases repo
