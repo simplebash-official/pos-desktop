@@ -33,6 +33,23 @@ logs/                        sidecar + app logs
 
 Back up the whole `com.jana2u.pos/` folder.
 
+### Updates and your data
+
+The in-app updater (Settings → Updates) and every installer only replace the
+**application bundle**. Nothing under `com.jana2u.pos/` is touched, so sales,
+settings, generated PDFs and the generated secrets survive an update. On the
+first launch after a version change, `orchestrator::sync_render_assets` re-lays
+the bundled Typst templates/fonts into `assets/` via `copy_dir_merge`, which
+overwrites the shipped files but never deletes a template a shop added itself.
+
+Updates are delivered through the Tauri updater:
+
+| Piece | Where |
+|---|---|
+| Update feed | `https://github.com/jana2u-pos-system/releases` → `latest.json` on the newest release |
+| Signature check | `plugins.updater.pubkey` in `tauri.conf.json` (minisign; the private key is a CI secret) |
+| Trigger | user clicks **Check for updates** in Settings — no silent/auto install |
+
 ## Develop
 
 ```bash
@@ -52,6 +69,17 @@ npm run tauri dev                  # or: npm run dev
 npm run tauri build                # -> .app + .dmg (macOS) / .exe (Windows, NSIS)
 ```
 
-Cross-OS builds run in CI (`.github/workflows/desktop-build.yml`). Code signing
-(Apple Developer ID + notarization, Windows cert) and auto-update are not wired
-yet — see the project plan.
+Cross-OS builds (Linux AppImage, Windows NSIS, macOS dmg) run in CI on a `v*`
+tag push — `.github/workflows/desktop-build.yml` builds every platform, signs
+the updater artifacts, and publishes a GitHub Release plus `latest.json` to the
+public `jana2u-pos-system/releases` repo. OS-level code signing (Apple
+Developer ID + notarization, Windows Authenticode) is still deferred — the
+bundles are unsigned to the OS, but the updater artifacts are cryptographically
+signed so auto-update stays safe.
+
+### Cutting a release
+
+```bash
+scripts/release.sh 0.2.0     # bumps tauri.conf.json + Cargo.toml + package.json, commits, tags v0.2.0
+git push && git push --tags  # the tag push starts desktop-build.yml
+```
