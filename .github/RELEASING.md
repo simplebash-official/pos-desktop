@@ -37,14 +37,21 @@ npx --prefix . tauri signer generate --ci --password "" \
 
 | Secret | Value |
 |---|---|
+| `CI_SUBMODULE_TOKEN` | fine-grained PAT, **Contents: Read-only** on `backend`, `pdf-server`, `frontend`, `compose` (the workflow's own `GITHUB_TOKEN` can't read the sibling private repos, so `actions/checkout` needs this for the submodule clones) |
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.jana2u-updater/jana2u-updater.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | empty string (key was generated with no password) |
-| `RELEASES_REPO_TOKEN` | a fine-grained PAT with **Contents: read and write** on `jana2u-pos-system/releases` |
+| `RELEASES_REPO_TOKEN` | fine-grained PAT, **Contents: Read and write** on `jana2u-pos-system/releases` |
+
+`CI_SUBMODULE_TOKEN` and `RELEASES_REPO_TOKEN` can be the **same** fine-grained PAT if
+you give it Contents: Read+Write on all five repos — least-privilege is two separate
+tokens, convenience is one.
 
 ```bash
-gh secret set TAURI_SIGNING_PRIVATE_KEY     < ~/.jana2u-updater/jana2u-updater.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --body ""
-gh secret set RELEASES_REPO_TOKEN           --body "<paste PAT>"
+gh secret set CI_SUBMODULE_TOKEN --repo jana2u-pos-system/compose --body "<paste PAT>"
+gh secret set TAURI_SIGNING_PRIVATE_KEY --repo jana2u-pos-system/compose \
+  < ~/.jana2u-updater/jana2u-updater.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo jana2u-pos-system/compose --body ""
+gh secret set RELEASES_REPO_TOKEN --repo jana2u-pos-system/compose --body "<paste PAT>"
 ```
 
 ## Cutting a release
