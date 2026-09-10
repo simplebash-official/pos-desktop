@@ -76,7 +76,11 @@ curl -sL https://github.com/jana2u-pos-system/releases/releases/latest/download/
 ```
 
 Every `platforms.*` URL must resolve (200) and there must be one entry each for
-`darwin-aarch64`, `darwin-x86_64`, `linux-x86_64`, `windows-x86_64`.
+`darwin-aarch64` (Apple Silicon), `linux-x86_64`, `windows-x86_64`.
+
+> Intel Macs are not built — GitHub's `macos-13` runners are being retired and
+> queue for hours. If you need them, add a `universal-apple-darwin` target
+> cross-built on the `macos-14` runner.
 
 Then, on a machine with an **older** version installed: Settings → Updates →
 Check for updates → download → install → restart, and confirm prior sales +
