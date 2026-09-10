@@ -111,5 +111,4 @@ git push && git push origin v0.2.2         # the tag push starts the build + pub
   More info → Run anyway. In-app updates after that are clean. See `.github/RELEASING.md`.
 - **`workflow_dispatch`** (Actions → desktop-build → Run workflow) builds all 3 platforms;
   it publishes only if you tick `publish`. Use it to check a build.
-- One-time CI setup (secrets, the releases repo, the `main` ruleset bypass) lives in
-  `.github/RELEASING.md`.
+- One-time CI setup (secrets, the releases repo) lives in `.github/RELEASING.md`.

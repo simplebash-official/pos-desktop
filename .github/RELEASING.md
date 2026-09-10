@@ -48,22 +48,28 @@ Authenticode cert, wired into `desktop-build.yml`.
 
 ## One-time setup
 
-### 0. Let GitHub Actions bypass the `main` ruleset
+### 0. Branch protection — only if you have any
 
-`release.yml` pushes the release commit + tag straight to `main`. If `main` has a
-protection ruleset (required PR, linear history, restricted pushes), that push
-fails with `GH006: Protected branch update failed`.
+`release.yml` pushes the release commit + tag straight to `main`. This works
+out of the box on a **Free** org plan with a **private** repo — rulesets aren't
+enforced there and classic branch protection doesn't apply, so there is nothing
+to do.
 
-GitHub → repo **Settings → Rules →** the `main` ruleset **→ Bypass list → Add
-bypass →** add the **`GitHub Actions`** actor (`github-actions[bot]`), mode
-"Always allow". Keep "Require a pull request before merging" for humans — the
-bypass only exempts the Actions bot. If a `v*` **tag** ruleset exists, add the
-same bypass there.
+You only need to act if **both**: (a) the org is on **GitHub Team/Enterprise**
+or the repo is **public**, *and* (b) `main` has a ruleset or classic protection
+that restricts pushes / requires a PR / requires linear history. Then the CI
+push fails with `GH006: Protected branch update failed`, and you fix it with:
 
-> No bot bypass allowed? Change the "Commit + tag on main" step in `release.yml`
-> to push only the tag (`git push origin "$TAG"`), not `HEAD:main`. The tag still
-> carries the bumped `package.json` + submodule pins; `main` just lags by the
-> `chore(release)` commit. `next-version.sh` works off tags, so this is fine.
+> **Settings → Rules →** the `main` ruleset **→ Bypass list → Add bypass →** add
+> the **`GitHub Actions`** actor (`github-actions[bot]`), mode "Always allow".
+> Keep "Require a pull request before merging" for humans — the bypass only
+> exempts the Actions bot. Add the same bypass to a `v*` **tag** ruleset if one
+> exists.
+>
+> Can't grant a bot bypass? Change the "Commit + tag on main" step in
+> `release.yml` to push only the tag (`git push origin "$TAG"`), not `HEAD:main`.
+> The tag still carries the bumped `package.json` + submodule pins; `main` just
+> lags by the `chore(release)` commit, and `next-version.sh` works off tags.
 
 ### 1. Create the public releases repo
 
