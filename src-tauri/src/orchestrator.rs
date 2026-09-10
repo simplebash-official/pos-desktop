@@ -92,10 +92,9 @@ fn copy_dir_merge(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Lay down (or refresh, on version change) the writable copy of the Typst
 /// templates + fonts. document-server writes into its templates dir at
 /// runtime, so it cannot point at the read-only resource bundle.
-fn sync_render_assets(resource_dir: &Path, assets_dir: &Path) -> std::io::Result<()> {
+fn sync_render_assets(resource_dir: &Path, assets_dir: &Path, version: &str) -> std::io::Result<()> {
     let stamp = assets_dir.join(".version");
-    let current = env!("CARGO_PKG_VERSION");
-    if fs::read_to_string(&stamp).ok().as_deref() == Some(current) {
+    if fs::read_to_string(&stamp).ok().as_deref() == Some(version) {
         return Ok(());
     }
     for name in ["templates", "fonts"] {
@@ -105,7 +104,7 @@ fn sync_render_assets(resource_dir: &Path, assets_dir: &Path) -> std::io::Result
         }
     }
     fs::create_dir_all(assets_dir)?;
-    fs::write(&stamp, current)?;
+    fs::write(&stamp, version)?;
     Ok(())
 }
 
@@ -253,7 +252,12 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
 
     let secrets = load_or_create_secrets(&data_dir.join("config.json"))
         .map_err(|e| format!("secrets: {e}"))?;
-    sync_render_assets(&resource_dir, &assets_dir).map_err(|e| format!("render assets: {e}"))?;
+    // App version is the single source of truth in package.json (tauri.conf.json
+    // -> "version": "../package.json"); read it at runtime rather than baking in
+    // CARGO_PKG_VERSION, which is no longer release-bumped.
+    let version = app.package_info().version.to_string();
+    sync_render_assets(&resource_dir, &assets_dir, &version)
+        .map_err(|e| format!("render assets: {e}"))?;
 
     // --- document-server -------------------------------------------------
     let doc_child = spawn_sidecar(

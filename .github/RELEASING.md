@@ -1,7 +1,33 @@
 # Releasing the desktop app
 
-`.github/workflows/desktop-build.yml` builds every OS and publishes a GitHub
-Release + the Tauri updater manifest (`latest.json`) on every `v*` tag push.
+Releases are **automatic**: `.github/workflows/release.yml` runs on every push to
+`main`, and when it finds a releasable Conventional Commit since the last `v*`
+tag (`feat:` → minor, `fix:`/`perf:` → patch, `<type>!` / `BREAKING CHANGE` →
+bump; `docs`/`chore`/`ci`/`refactor`/`test`/`build`/`style` → nothing) it:
+
+1. computes the next version (`scripts/ci/next-version.sh`),
+2. pulls `frontend` + `backend` + `document-server` to their tracked-branch tips,
+3. bumps `package.json` (`scripts/set-version.py` — the single source of truth),
+4. commits `chore(release): vX.Y.Z [skip ci]` and tags `vX.Y.Z` on `main`
+   (pushed with the default `GITHUB_TOKEN`),
+5. calls `.github/workflows/desktop-build.yml` (a reusable workflow) to build
+   every OS and publish the GitHub Release + `latest.json` to
+   `jana2u-pos-system/releases`.
+
+`desktop-build.yml` has three entry points:
+
+| trigger | what it does |
+|---|---|
+| `workflow_call` (from `release.yml`) | build + publish — the normal path |
+| `workflow_dispatch` | build all 3 OSes; publish only if you tick `publish` |
+| `push: tags: v*` | emergency / offline path — build + publish |
+
+## Loop safety
+
+The release commit + tag are pushed with `GITHUB_TOKEN`, which by GitHub's rules
+does **not** start another workflow run — so no loop, no double build. Belt and
+braces: the commit message carries `[skip ci]`, and even without it
+`next-version.sh` finds no releasable commit after the fresh tag.
 
 ## Unsigned bundles — first-launch friction
 
@@ -21,6 +47,23 @@ To remove this entirely: Apple Developer ID + notarization and a Windows
 Authenticode cert, wired into `desktop-build.yml`.
 
 ## One-time setup
+
+### 0. Let GitHub Actions bypass the `main` ruleset
+
+`release.yml` pushes the release commit + tag straight to `main`. If `main` has a
+protection ruleset (required PR, linear history, restricted pushes), that push
+fails with `GH006: Protected branch update failed`.
+
+GitHub → repo **Settings → Rules →** the `main` ruleset **→ Bypass list → Add
+bypass →** add the **`GitHub Actions`** actor (`github-actions[bot]`), mode
+"Always allow". Keep "Require a pull request before merging" for humans — the
+bypass only exempts the Actions bot. If a `v*` **tag** ruleset exists, add the
+same bypass there.
+
+> No bot bypass allowed? Change the "Commit + tag on main" step in `release.yml`
+> to push only the tag (`git push origin "$TAG"`), not `HEAD:main`. The tag still
+> carries the bumped `package.json` + submodule pins; `main` just lags by the
+> `chore(release)` commit. `next-version.sh` works off tags, so this is fine.
 
 ### 1. Create the public releases repo
 
@@ -73,18 +116,26 @@ gh secret set RELEASES_REPO_TOKEN --repo jana2u-pos-system/compose --body "<past
 
 ## Cutting a release
 
-```bash
-scripts/release.sh 0.2.0
-git show v0.2.0          # sanity-check the version bump
-git push && git push --tags
-```
+Normally you don't — merge a `feat:` / `fix:` / `perf:` / breaking commit to
+`main` and `release.yml` does everything. See `RELEASE.md`.
 
-Watch the run: `version-check` → 4 `build` jobs → `publish`. When it is green,
+Watch the run: `release / prepare` → `desktop-build / version-check` → 3 `build`
+jobs → `publish`. When it is green,
 `https://github.com/jana2u-pos-system/releases/releases/latest/download/latest.json`
 resolves and installed apps will offer the update.
 
-`workflow_dispatch` runs the builds without publishing — use it to check a build
-before tagging.
+### Emergency / offline
+
+```bash
+git checkout main && git pull && git status   # must be clean
+scripts/release.sh --auto --bump-submodules    # or: scripts/release.sh 0.2.2
+git show v0.2.2                                # sanity-check
+git push && git push origin v0.2.2            # tag push → desktop-build.yml (build + publish)
+```
+
+This path needs no `main` ruleset bypass (a human pushes) and works offline up to
+the `git push`. `workflow_dispatch` builds all 3 OSes without publishing (unless
+you tick `publish`) — use it to check a build.
 
 ## Verifying
 

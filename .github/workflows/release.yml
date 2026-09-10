@@ -1,0 +1,93 @@
+name: release
+
+# Release-on-push-to-main. Every push to `main` is inspected:
+#
+#   * A releasable Conventional Commit since the last v* tag
+#     (feat: -> minor, fix:/perf: -> patch, <type>! / BREAKING CHANGE -> bump;
+#      docs/chore/ci/refactor/test/build/style -> nothing) triggers a release:
+#       1. compute the next version         (scripts/ci/next-version.sh)
+#       2. pull the 3 submodules to their tracked branch tips
+#       3. bump package.json                (scripts/set-version.py)
+#       4. commit "chore(release): vX.Y.Z [skip ci]" + annotated tag, push both to main
+#       5. call desktop-build.yml to build every OS and publish the release
+#
+#   * Nothing releasable -> the job no-ops, no build.
+#
+# The commit + tag are pushed with the default GITHUB_TOKEN. A GITHUB_TOKEN push
+# does NOT start another workflow run, so there is no loop and no double build;
+# the "[skip ci]" marker and the "no releasable commits since the new tag" check
+# are extra guards.
+#
+# PREREQUISITE: the `main` branch ruleset must let `github-actions[bot]` bypass
+# it (Settings -> Rules -> main -> Bypass list), otherwise the push fails GH006.
+#
+# Manual / emergency path is unchanged: scripts/release.sh <ver> then
+# `git push origin v<ver>` -> desktop-build.yml via its `push: tags: v*` trigger.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.compute.outputs.release }}
+      version: ${{ steps.compute.outputs.version }}
+      tag: ${{ steps.compute.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # full history + tags for next-version + changelog
+          persist-credentials: true # keep the GITHUB_TOKEN credential for the push below
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Compute next version from conventional commits
+        id: compute
+        run: scripts/ci/next-version.sh
+
+      - name: Bump submodule pins to their tracked branches
+        if: steps.compute.outputs.release == 'true'
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.CI_SUBMODULE_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "git@github.com:"
+          git submodule sync
+          git submodule update --init --remote --depth 1 -- frontend backend document-server
+          git config --global --unset url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf
+          git submodule status
+
+      - name: Bump version (package.json is the single source of truth)
+        if: steps.compute.outputs.release == 'true'
+        run: python3 scripts/set-version.py "${{ steps.compute.outputs.version }}"
+
+      - name: Commit + tag on main
+        if: steps.compute.outputs.release == 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore(release): ${{ steps.compute.outputs.tag }} [skip ci]"
+          git tag -a "${{ steps.compute.outputs.tag }}" -m "Jana2U POS desktop ${{ steps.compute.outputs.tag }}"
+          git push origin HEAD:main
+          git push origin "${{ steps.compute.outputs.tag }}"
+
+  desktop:
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    uses: ./.github/workflows/desktop-build.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      publish: true
+      ref: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit

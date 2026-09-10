@@ -41,6 +41,8 @@ settings, generated PDFs and the generated secrets survive an update. On the
 first launch after a version change, `orchestrator::sync_render_assets` re-lays
 the bundled Typst templates/fonts into `assets/` via `copy_dir_merge`, which
 overwrites the shipped files but never deletes a template a shop added itself.
+(The version it compares against `assets/.version` is `app.package_info().version`
+— i.e. `package.json`, resolved through `tauri.conf.json`.)
 
 Updates are delivered through the Tauri updater:
 
@@ -69,17 +71,19 @@ npm run tauri dev                  # or: npm run dev
 npm run tauri build                # -> .app + .dmg (macOS) / .exe (Windows, NSIS)
 ```
 
-Cross-OS builds (Linux AppImage, Windows NSIS, macOS dmg) run in CI on a `v*`
-tag push — `.github/workflows/desktop-build.yml` builds every platform, signs
-the updater artifacts, and publishes a GitHub Release plus `latest.json` to the
-public `jana2u-pos-system/releases` repo. OS-level code signing (Apple
-Developer ID + notarization, Windows Authenticode) is still deferred — the
-bundles are unsigned to the OS, but the updater artifacts are cryptographically
-signed so auto-update stays safe.
+Cross-OS builds (Linux AppImage, Windows NSIS, macOS dmg) run in CI on every
+releasable push to `main` (and on a manual `v*` tag) —
+`.github/workflows/desktop-build.yml` builds every platform, signs the updater
+artifacts, and publishes a GitHub Release plus `latest.json` to the public
+`jana2u-pos-system/releases` repo. OS-level code signing (Apple Developer ID +
+notarization, Windows Authenticode) is still deferred — the bundles are unsigned
+to the OS, but the updater artifacts are cryptographically signed so auto-update
+stays safe.
 
 ### Cutting a release
 
-```bash
-scripts/release.sh 0.2.0     # bumps tauri.conf.json + Cargo.toml + package.json, commits, tags v0.2.0
-git push && git push --tags  # the tag push starts desktop-build.yml
-```
+Automatic — merge a `feat:` / `fix:` / `perf:` / breaking commit to `main` and
+`.github/workflows/release.yml` bumps `package.json`, pulls the submodules, tags,
+builds and publishes. See [`../RELEASE.md`](../RELEASE.md). Emergency / offline:
+`scripts/release.sh --auto --bump-submodules` then `git push && git push origin
+v<ver>`.
