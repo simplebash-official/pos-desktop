@@ -98,3 +98,34 @@ Rust gates for `src-tauri/`: `cargo fmt`, `cargo clippy --manifest-path src-taur
 Web (service-worker prompt) and desktop (`tauri-plugin-updater` against `latest.json`) are
 independent channels, surfaced together in **Settings → Updates**. Desktop updates only replace
 the app bundle — data under `com.jana2u.pos/` is never touched. Details: `src-tauri/README.md`.
+
+## Recent Architecture Evolutions (Last 30 Days)
+
+### Landed Features & Systems
+1. **Automated CI/CD Release Pipeline (`.github/workflows/release.yml`)**:
+   - Pushes to `main` evaluate Conventional Commit prefixes (`scripts/ci/next-version.sh`).
+   - `feat:` bumps minor, `fix:`/`perf:` bumps patch, breaking bumps major/minor (`<1.0`). Routine commits (`chore:`, `docs:`, `ci:`, `refactor:`, `test:`) are ignored and do not waste CI runner minutes.
+   - `package.json` is the sole version authority (`scripts/set-version.py`). `src-tauri/tauri.conf.json` resolves `"version": "../package.json"` dynamically.
+   - Publishes installers for macOS (Apple Silicon `aarch64`), Windows (NSIS `x86_64`), and Linux (`.deb` / `.AppImage`) alongside the updater manifest `latest.json` in `jana2u-pos-system/releases`.
+2. **Sidecar Process Termination & NSIS Hooks (`src-tauri/installer-hooks.nsh`)**:
+   - Running background sidecars (`backend` on 8080, `document-server` on 8090) lock executable files on Windows and macOS.
+   - Added Tauri command `terminate_sidecar_processes` (invoked before `downloadAndInstall()` in `UpdatesSection.tsx`) and uninstaller/installer NSIS hooks to forcibly stop orphan processes before replacing binaries.
+3. **Desktop Data Backup & Restore**:
+   - Full SQLite database export and transactional restore across all 25 tables.
+   - Completely isolated to the desktop application (`isTauri()` gating); never exposed on web deployments.
+
+### Future Implementation Rules
+- **Submodule Push Invariant**: When adding features across submodules, you **MUST push the submodule commits to their remote tracking branches (`backend:master`, `frontend:main`, `document-server:main`) before merging the PR in this root compose repo**. The cloud CI pipeline pulls submodules using `git submodule update --remote`; if your changes only exist on a local detached HEAD, CI will compile a release with the stale remote code.
+- **Version Integrity**: Never edit versions by hand. Use Conventional Commit prefixes to let CI increment versions, or use `scripts/release.sh <ver>` for emergency offline tagging.
+- **Sidecar Port & Address Binding**: Desktop sidecars must strictly bind to loopback (`127.0.0.1`), never `0.0.0.0`, to prevent exposing internal endpoints on local networks.
+
+### How Agents Can Help
+- **Release Verification**:
+  1. Inspect submodule status: `git submodule status` and verify all submodules are up to date with their remotes.
+  2. Preview the automated version bump: `scripts/ci/next-version.sh --dry-run`.
+  3. Validate conventional commit messages on PR branches to ensure expected release triggers.
+- **Installer & Sidecar Validation**:
+  - Test desktop sidecar build script: `bash scripts/build-sidecars.sh`.
+  - Check Tauri compilation: `cargo check --manifest-path src-tauri/Cargo.toml`.
+  - When modifying sidecars or updater logic, verify that process termination hooks in `src-tauri/src/lib.rs` and `installer-hooks.nsh` are preserved.
+
