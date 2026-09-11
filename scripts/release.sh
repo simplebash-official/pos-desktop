@@ -19,7 +19,7 @@
 #
 # The tag push starts `.github/workflows/desktop-build.yml` via its `push: tags`
 # trigger, which builds every OS and publishes the GitHub Release + `latest.json`
-# to `jana2u-pos-system/releases`
+# to `jana2u-pos-system/releases`.
 set -euo pipefail
 
 VERSION=""
