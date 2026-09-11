@@ -92,7 +92,11 @@ fn copy_dir_merge(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// Lay down (or refresh, on version change) the writable copy of the Typst
 /// templates + fonts. document-server writes into its templates dir at
 /// runtime, so it cannot point at the read-only resource bundle.
-fn sync_render_assets(resource_dir: &Path, assets_dir: &Path, version: &str) -> std::io::Result<()> {
+fn sync_render_assets(
+    resource_dir: &Path,
+    assets_dir: &Path,
+    version: &str,
+) -> std::io::Result<()> {
     let stamp = assets_dir.join(".version");
     if fs::read_to_string(&stamp).ok().as_deref() == Some(version) {
         return Ok(());
@@ -152,7 +156,7 @@ async fn wait_healthy(name: &str, port: u16, path: &str, timeout: Duration) -> R
 /// died without running its exit handler (SIGKILL, power loss, a panic).
 /// Runs before we spawn, so a stale backend can't hold `:8080` and make this
 /// launch fail. Safe because both binary names are unique to this app.
-fn reap_orphan_sidecars() {
+pub fn reap_orphan_sidecars() {
     let names = ["jana2u-backend", "jana2u-document-server"];
     for name in names {
         #[cfg(windows)]

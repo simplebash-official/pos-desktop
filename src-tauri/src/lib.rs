@@ -14,6 +14,15 @@ fn log_webview(level: String, message: String) {
     }
 }
 
+/// Terminate all sidecar processes immediately prior to an updater relaunch
+/// or installer execution so running binaries never lock files during extraction.
+#[tauri::command]
+fn prepare_for_update(app: tauri::AppHandle) {
+    log::info!("prepare_for_update: shutting down sidecars before installer runs");
+    app.state::<Sidecars>().kill_all();
+    orchestrator::reap_orphan_sidecars();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut builder = tauri::Builder::default();
@@ -42,7 +51,7 @@ pub fn run() {
         // JS API; `tauri_plugin_process` supplies the relaunch after install.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![log_webview])
+        .invoke_handler(tauri::generate_handler![log_webview, prepare_for_update])
         .manage(Sidecars::default())
         .setup(|app| {
             let handle = app.handle().clone();
