@@ -44,6 +44,8 @@ Consequences for how you work here:
 - **Never hand-edit the version.** `package.json` is the single source of truth
   (`src-tauri/tauri.conf.json` → `"version": "../package.json"`; the Rust side reads
   `app.package_info().version`). `src-tauri/Cargo.toml` `version` is frozen on purpose.
+  `scripts/set-version.py` synchronizes both root `package.json` and `frontend/package.json` so the
+  desktop app and web deployment share the exact same version number.
 - The pipeline commits `chore(release): vX.Y.Z [skip ci]` and tags it. Don't fight that commit —
   `git pull` before starting new work.
 - **Bumping a submodule pin is not needed for a release** — the pipeline runs
