@@ -38,3 +38,6 @@ src-tauri/resources/
 # graphify cross-repo analysis output (per-submodule graphs are the canonical ones)
 graphify-out/
 src-tauri/graphify-out/
+
+# Cargo / Benchmark targets
+/target/

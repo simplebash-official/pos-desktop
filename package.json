@@ -9,6 +9,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "build:desktop": "npm run sidecars && npm run build",
+    "test:stress": "bash scripts/stress-test-desktop.sh",
     "env:desktop": "cp .env.desktop.example .env",
     "env:web": "cp .env.web.example .env",
     "web:build": "docker compose --env-file .env.web build",
