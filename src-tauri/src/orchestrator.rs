@@ -71,6 +71,51 @@ fn load_or_create_secrets(config_path: &Path) -> std::io::Result<Secrets> {
     Ok(secrets)
 }
 
+/// Installation metadata tracking when the app was first installed/run on this computer.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InstallationRecord {
+    pub installation_id: String,
+    pub app_version: String,
+    pub platform: String,
+    pub installed_at: String,
+    pub initial_setup_completed: bool,
+    pub sample_data_loaded: Option<bool>,
+}
+
+pub fn load_or_create_installation(
+    install_path: &Path,
+    app_version: &str,
+) -> std::io::Result<InstallationRecord> {
+    if let Ok(raw) = fs::read_to_string(install_path) {
+        if let Ok(record) = serde_json::from_str::<InstallationRecord>(&raw) {
+            return Ok(record);
+        }
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = InstallationRecord {
+        installation_id: format!("inst_{}", &hex64()[..16]),
+        app_version: app_version.to_string(),
+        platform: std::env::consts::OS.to_string(),
+        installed_at: now,
+        initial_setup_completed: false,
+        sample_data_loaded: None,
+    };
+    fs::write(install_path, serde_json::to_string_pretty(&record).unwrap())?;
+    Ok(record)
+}
+
+pub fn update_installation_setup(
+    install_path: &Path,
+    sample_data_loaded: bool,
+) -> std::io::Result<InstallationRecord> {
+    let mut record = load_or_create_installation(install_path, "0.5.0")?;
+    record.initial_setup_completed = true;
+    record.sample_data_loaded = Some(sample_data_loaded);
+    fs::write(install_path, serde_json::to_string_pretty(&record).unwrap())?;
+    Ok(record)
+}
+
+
 /// Copy `src` into `dst` recursively, overwriting files that already exist
 /// but never deleting extra files in `dst` (so a shop-added template
 /// survives an app update that re-lays-down the bundled ones).
@@ -260,6 +305,9 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
     // -> "version": "../package.json"); read it at runtime rather than baking in
     // CARGO_PKG_VERSION, which is no longer release-bumped.
     let version = app.package_info().version.to_string();
+    let installation = load_or_create_installation(&data_dir.join("installation.json"), &version)
+        .map_err(|e| format!("installation record: {e}"))?;
+
     sync_render_assets(&resource_dir, &assets_dir, &version)
         .map_err(|e| format!("render assets: {e}"))?;
 
@@ -319,7 +367,10 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
                 generated_docs.to_string_lossy().into_owned(),
             ),
             ("RETURN_WINDOW_DAYS", "30".into()),
-            ("AUTO_SEED", "true".into()),
+            ("AUTO_SEED", "false".into()),
+            ("INSTALLATION_ID", installation.installation_id.clone()),
+            ("APP_VERSION", version.clone()),
+            ("PLATFORM", std::env::consts::OS.to_string()),
             (
                 "RUST_LOG",
                 "jana2u_pos_backend=info,tower_http=warn,warn".into(),

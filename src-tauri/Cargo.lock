@@ -2139,6 +2139,7 @@ name = "jana2u-pos-desktop"
 version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "log",
  "objc2",
  "objc2-app-kit",

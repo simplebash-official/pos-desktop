@@ -115,6 +115,11 @@ the app bundle — data under `com.jana2u.pos/` is never touched. Details: `src-
 3. **Desktop Data Backup & Restore**:
    - Full SQLite database export and transactional restore across all 25 tables.
    - Completely isolated to the desktop application (`isTauri()` gating); never exposed on web deployments.
+4. **Initial Installation Detection, Welcome Wizard & Deferred Database Seeding**:
+   - Desktop orchestrator (`src-tauri/src/orchestrator.rs`) records `installation.json` in `app_data_dir()` on initial boot with unique `installation_id`, timestamp, version, and platform.
+   - Sets `AUTO_SEED=false` in the desktop backend environment to defer database population to user choice.
+   - Exposes system setup endpoints (`/api/system/setup-status`, `/api/system/setup`, `/api/system/installation`) and registers Tauri commands `get_installation_info` and `complete_installation_setup`.
+   - Frontend guides the user through an onboarding wizard (`/welcome`): system verification, capability tour, and explicit choice between "Load Sample / Demo Data" and "Clean Database (Empty Tables)" with automated admin account creation and auto-login into the POS dashboard.
 
 ### Future Implementation Rules
 - **Submodule Push Invariant**: When adding features across submodules, you **MUST push the submodule commits to their remote tracking branches (`backend:master`, `frontend:main`, `document-server:main`) before merging the PR in this root compose repo**. The cloud CI pipeline pulls submodules using `git submodule update --remote`; if your changes only exist on a local detached HEAD, CI will compile a release with the stale remote code.

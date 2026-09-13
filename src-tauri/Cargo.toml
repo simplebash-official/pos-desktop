@@ -34,6 +34,7 @@ tauri-plugin-updater = "2"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal"] }
 rand = "0.8"
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-devtools = "2.2.1"
 

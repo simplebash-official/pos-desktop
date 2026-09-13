@@ -25,6 +25,33 @@ fn prepare_for_update(app: tauri::AppHandle) {
     orchestrator::reap_orphan_sidecars();
 }
 
+/// Query the local desktop installation record.
+#[tauri::command]
+fn get_installation_info(app: tauri::AppHandle) -> Result<orchestrator::InstallationRecord, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data dir: {e}"))?;
+    let version = app.package_info().version.to_string();
+    orchestrator::load_or_create_installation(&data_dir.join("installation.json"), &version)
+        .map_err(|e| format!("failed to load installation record: {e}"))
+}
+
+/// Update the local desktop installation record upon completing onboarding.
+#[tauri::command]
+fn complete_installation_setup(
+    app: tauri::AppHandle,
+    sample_data_loaded: bool,
+) -> Result<orchestrator::InstallationRecord, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("no app data dir: {e}"))?;
+    orchestrator::update_installation_setup(&data_dir.join("installation.json"), sample_data_loaded)
+        .map_err(|e| format!("failed to update installation record: {e}"))
+}
+
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -93,6 +120,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             log_webview,
             prepare_for_update,
+            get_installation_info,
+            complete_installation_setup,
             printer::print_pdf_native,
             benchmark::get_system_specs,
             benchmark::benchmark_disk_io,
