@@ -347,12 +347,17 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
 /// check — so the frontend's startup auth probe never races an unready backend.
 fn reveal_main_window(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window("main").is_none() {
-        WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
             .title("Jana2U POS")
             .inner_size(1400.0, 900.0)
             .min_inner_size(1024.0, 640.0)
             .center()
-            .resizable(true)
+            .resizable(true);
+
+        #[cfg(debug_assertions)]
+        let builder = builder.devtools(true);
+
+        builder
             .build()
             .map_err(|e| format!("create main window: {e}"))?;
     }

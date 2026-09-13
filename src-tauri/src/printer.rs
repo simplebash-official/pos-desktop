@@ -8,16 +8,40 @@
 #[tauri::command]
 pub async fn print_pdf_native(
     app: tauri::AppHandle,
-    pdf_base64: String,
+    pdf_base64: Option<String>,
+    pdf_url: Option<String>,
+    pdf_bytes: Option<Vec<u8>>,
     title: Option<String>,
 ) -> Result<(), String> {
+    let bytes = if let Some(url) = pdf_url {
+        let resp = reqwest::get(&url)
+            .await
+            .map_err(|e| format!("Failed to fetch PDF from {url}: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Document server returned status {}: {url}", resp.status()));
+        }
+        resp.bytes()
+            .await
+            .map_err(|e| format!("Failed to read PDF bytes from {url}: {e}"))?
+            .to_vec()
+    } else if let Some(bytes) = pdf_bytes {
+        bytes
+    } else if let Some(b64) = pdf_base64 {
+        use base64::prelude::*;
+        BASE64_STANDARD
+            .decode(b64.trim())
+            .map_err(|e| format!("Failed to decode base64 PDF: {e}"))?
+    } else {
+        return Err("No PDF payload provided (expected pdf_url, pdf_bytes, or pdf_base64)".to_string());
+    };
+
     #[cfg(target_os = "macos")]
     {
-        macos::print_pdf(app, pdf_base64, title).await
+        macos::print_pdf_bytes(app, bytes, title).await
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (app, pdf_base64, title);
+        let _ = (app, bytes, title);
         Err("Native PDF printing is currently only implemented on macOS".to_string())
     }
 }
@@ -26,7 +50,6 @@ pub async fn print_pdf_native(
 mod macos {
     use std::fs;
     use std::sync::mpsc;
-    use base64::prelude::*;
     use objc2::rc::autoreleasepool;
     use objc2::AnyThread;
     use objc2_app_kit::NSPrintInfo;
@@ -34,14 +57,11 @@ mod macos {
     use objc2_pdf_kit::{PDFDocument, PDFPrintScalingMode};
     use tauri::AppHandle;
 
-    pub async fn print_pdf(
+    pub async fn print_pdf_bytes(
         app: AppHandle,
-        pdf_base64: String,
+        pdf_bytes: Vec<u8>,
         title: Option<String>,
     ) -> Result<(), String> {
-        let pdf_bytes = BASE64_STANDARD
-            .decode(pdf_base64.trim())
-            .map_err(|e| format!("Failed to decode base64 PDF: {e}"))?;
 
         let temp_dir = std::env::temp_dir();
         let file_name = format!(

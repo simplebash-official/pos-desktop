@@ -12,6 +12,7 @@
     "core:event:default",
     "updater:default",
     "process:allow-restart",
+    "devtools:default",
     {
       "identifier": "shell:allow-execute",
       "allow": [

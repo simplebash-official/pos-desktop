@@ -34,6 +34,8 @@ tauri-plugin-updater = "2"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal"] }
 rand = "0.8"
 base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tauri-plugin-devtools = "2.2.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
