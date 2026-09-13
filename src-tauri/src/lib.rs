@@ -1,3 +1,4 @@
+mod benchmark;
 mod orchestrator;
 mod printer;
 
@@ -92,7 +93,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             log_webview,
             prepare_for_update,
-            printer::print_pdf_native
+            printer::print_pdf_native,
+            benchmark::get_system_specs,
+            benchmark::benchmark_disk_io,
+            benchmark::benchmark_native_compute,
         ])
         .manage(Sidecars::default())
         .setup(|app| {
