@@ -1,4 +1,5 @@
 mod orchestrator;
+mod printer;
 
 use orchestrator::Sidecars;
 use tauri::{Manager, RunEvent};
@@ -51,7 +52,11 @@ pub fn run() {
         // JS API; `tauri_plugin_process` supplies the relaunch after install.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![log_webview, prepare_for_update])
+        .invoke_handler(tauri::generate_handler![
+            log_webview,
+            prepare_for_update,
+            printer::print_pdf_native
+        ])
         .manage(Sidecars::default())
         .setup(|app| {
             let handle = app.handle().clone();
