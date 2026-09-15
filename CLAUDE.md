@@ -111,7 +111,7 @@ the app bundle — data under `com.jana2u.pos/` is never touched. Details: `src-
    - Publishes installers for macOS (Apple Silicon `aarch64`), Windows (NSIS `x86_64`), and Linux (`.deb` / `.AppImage`) alongside the updater manifest `latest.json` in `jana2u-pos-system/releases`.
 2. **Sidecar Process Termination & NSIS Hooks (`src-tauri/installer-hooks.nsh`)**:
    - Running background sidecars (`backend` on 8080, `document-server` on 8090) lock executable files on Windows and macOS.
-   - Added Tauri command `terminate_sidecar_processes` (invoked before `downloadAndInstall()` in `UpdatesSection.tsx`) and uninstaller/installer NSIS hooks to forcibly stop orphan processes before replacing binaries.
+   - Tauri command `prepare_for_update` (invoked before `update.install()` in `UpdatesSection.tsx`) and uninstaller/installer NSIS hooks forcibly stop orphan processes before replacing binaries.
 3. **Desktop Data Backup & Restore**:
    - Full SQLite database export and transactional restore across all 25 tables.
    - Completely isolated to the desktop application (`isTauri()` gating); never exposed on web deployments.
@@ -121,9 +121,16 @@ the app bundle — data under `com.jana2u.pos/` is never touched. Details: `src-
    - Exposes system setup endpoints (`/api/system/setup-status`, `/api/system/setup`, `/api/system/installation`) and registers Tauri commands `get_installation_info` and `complete_installation_setup`.
    - Frontend guides the user through an onboarding wizard (`/welcome`): system verification, capability tour, and explicit choice between "Load Sample / Demo Data" and "Clean Database (Empty Tables)" with automated admin account creation and auto-login into the POS dashboard.
 
+5. **Unified Desktop Activity Log** (`docs/logging.md`):
+   - The shell (`src-tauri/src/logging/`) is the single writer of `<app_data_dir>/logs/<YYYY-MM-DD>/<source>.jsonl` — schema v1 JSON lines with local-offset `ts`, `ts_utc`, IANA `tz`, `boot_id`, `request_id`, redacted `data`. Days > 7 old are gzipped; nothing is deleted.
+   - Sources: shell (`log::` + `LogEvent::shell(..).emit()`, panics, windows, commands via `CommandLog`), frontend (`invoke('log_ingest')` from `frontend/src/shared/logging`), every sidecar's stdout (`LOG_FORMAT=json` → `logging::ingest`), and `logs/inbox/*.jsonl` (the NSIS installer).
+   - Sidecars are declared once in `orchestrator::SIDECARS` (`SidecarSpec`); each gets the `LOG_*` env contract. `X-Request-Id` ties a frontend click → backend request → SQL/domain events → document-server render.
+   - Viewer: Settings → Activity Log (desktop + admin only) via `logs_*` commands.
+
 ### Future Implementation Rules
 - **Submodule Push Invariant**: When adding features across submodules, you **MUST push the submodule commits to their remote tracking branches (`backend:master`, `frontend:main`, `document-server:main`) before merging the PR in this root compose repo**. The cloud CI pipeline pulls submodules using `git submodule update --remote`; if your changes only exist on a local detached HEAD, CI will compile a release with the stale remote code.
 - **Version Integrity**: Never edit versions by hand. Use Conventional Commit prefixes to let CI increment versions, or use `scripts/release.sh <ver>` for emergency offline tagging.
+- **Logging Invariant**: Anything new must be observable in the activity log — frontend features use `logger.event` (+ `data-log-id` on critical controls, `data-log-redact` on sensitive fields); backend/document-server mutating service functions wrap in `core::logging::domain::tracked`; new Tauri commands use `CommandLog`; a new sidecar is one `SIDECARS` entry that prints JSON lines on stdout. Never log secrets unredacted. Contract: `docs/logging.md`.
 - **Sidecar Port & Address Binding**: Desktop sidecars must strictly bind to loopback (`127.0.0.1`), never `0.0.0.0`, to prevent exposing internal endpoints on local networks.
 
 ### How Agents Can Help

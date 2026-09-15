@@ -13,12 +13,34 @@ pub async fn print_pdf_native(
     pdf_bytes: Option<Vec<u8>>,
     title: Option<String>,
 ) -> Result<(), String> {
+    let call = crate::logging::CommandLog::start(
+        "print_pdf_native",
+        serde_json::json!({
+            "pdf_url": pdf_url,
+            "pdf_bytes_len": pdf_bytes.as_ref().map(Vec::len),
+            "pdf_base64_len": pdf_base64.as_ref().map(String::len),
+            "title": title,
+        }),
+    );
+    call.finish(print_pdf_inner(app, pdf_base64, pdf_url, pdf_bytes, title).await)
+}
+
+async fn print_pdf_inner(
+    app: tauri::AppHandle,
+    pdf_base64: Option<String>,
+    pdf_url: Option<String>,
+    pdf_bytes: Option<Vec<u8>>,
+    title: Option<String>,
+) -> Result<(), String> {
     let bytes = if let Some(url) = pdf_url {
         let resp = reqwest::get(&url)
             .await
             .map_err(|e| format!("Failed to fetch PDF from {url}: {e}"))?;
         if !resp.status().is_success() {
-            return Err(format!("Document server returned status {}: {url}", resp.status()));
+            return Err(format!(
+                "Document server returned status {}: {url}",
+                resp.status()
+            ));
         }
         resp.bytes()
             .await
@@ -32,7 +54,9 @@ pub async fn print_pdf_native(
             .decode(b64.trim())
             .map_err(|e| format!("Failed to decode base64 PDF: {e}"))?
     } else {
-        return Err("No PDF payload provided (expected pdf_url, pdf_bytes, or pdf_base64)".to_string());
+        return Err(
+            "No PDF payload provided (expected pdf_url, pdf_bytes, or pdf_base64)".to_string(),
+        );
     };
 
     #[cfg(target_os = "macos")]
@@ -48,13 +72,13 @@ pub async fn print_pdf_native(
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::fs;
-    use std::sync::mpsc;
     use objc2::rc::autoreleasepool;
     use objc2::AnyThread;
     use objc2_app_kit::NSPrintInfo;
     use objc2_foundation::{MainThreadMarker, NSString, NSURL};
     use objc2_pdf_kit::{PDFDocument, PDFPrintScalingMode};
+    use std::fs;
+    use std::sync::mpsc;
     use tauri::AppHandle;
 
     pub async fn print_pdf_bytes(
@@ -62,7 +86,6 @@ mod macos {
         pdf_bytes: Vec<u8>,
         title: Option<String>,
     ) -> Result<(), String> {
-
         let temp_dir = std::env::temp_dir();
         let file_name = format!(
             "jana2u_print_{}_{}.pdf",

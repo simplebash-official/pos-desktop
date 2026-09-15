@@ -10,7 +10,8 @@ processes** on loopback; the webview loads the compiled frontend and talks to
 | Path | What |
 |---|---|
 | `src/lib.rs` | Tauri builder — plugins, single-instance, spawns `orchestrator::run`, kills sidecars on exit |
-| `src/orchestrator.rs` | app-data dirs, generated secrets (`config.json`), first-run Typst asset copy, sidecar spawn + health-gate, reveal main window |
+| `src/orchestrator.rs` | app-data dirs, generated secrets (`config.json`), first-run Typst asset copy, `SIDECARS` table + spawn + health-gate, reveal main window |
+| `src/logging/` | unified activity log hub: event schema, writer thread, redaction, sidecar/frontend ingest, retention, viewer commands |
 | `tauri.conf.json` | windows (splash + hidden main), CSP, `externalBin`, `resources` |
 | `capabilities/default.json` | core perms + the two sidecar `shell:allow-execute` scopes |
 | `entitlements.plist` | macOS hardened-runtime entitlements (loopback networking, run unsigned-by-Apple sidecars) |
@@ -24,12 +25,19 @@ Support/com.jana2u.pos/` on macOS, `%APPDATA%\com.jana2u.pos\` on Windows):
 
 ```
 config.json                 generated jwt_secret + internal_api_key
+installation.json            installation id + first-run time
 db/backend/pos.db            backend SQLite (+ -wal/-shm)
 db/document-server/…         document-server SQLite
 generated_documents/         rendered invoice/receipt PDFs
 assets/templates|fonts/      writable copy of the bundled Typst assets
-logs/                        sidecar + app logs
+logs/<YYYY-MM-DD>/<source>.jsonl   unified activity log (shell, frontend, backend,
+                             document-server, installer); days > 7 old are gzipped
+logs/inbox/                  JSON lines from external producers, ingested at launch
+logs/logging.json            logging settings (bodies, SQL, UI trace)
 ```
+
+The activity log is never deleted by the app. Schema, sources and how to add
+logging: [`docs/logging.md`](../docs/logging.md). View it in **Settings → Logs**.
 
 Back up the whole `com.jana2u.pos/` folder.
 

@@ -1,25 +1,35 @@
-// Boots and supervises the two bundled Rust services (backend on :8080,
+// Boots and supervises the bundled Rust services (backend on :8080,
 // document-server on :8090) as sidecar child processes, wiring them at
 // generated local secrets and an app-data SQLite location, then reveals the
-// main window once both answer their health check.
+// main window once every one answers its health check.
 //
 // Everything the services need that is normally supplied by `.env` /
 // docker-compose is passed here as process environment on the sidecar
 // `Command`. All writable state lives under the OS app-data directory; the
 // bundled (read-only) Typst templates/fonts are copied there on first run.
+//
+// Sidecars are declared once in `SIDECARS`. Adding a service = one entry
+// there (+ `externalBin`, capabilities, build script, NSIS taskkill). Its
+// stdout is ingested into the unified log automatically.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{sleep, Instant};
+
+use crate::logging::hub::{self, LogConfig};
+use crate::logging::ingest::{self, Stream};
+use crate::logging::{redact, Level, LogEvent};
 
 const BACKEND_PORT: u16 = 8080;
 const DOCUMENT_SERVER_PORT: u16 = 8090;
@@ -27,13 +37,33 @@ const LOOPBACK: &str = "127.0.0.1";
 
 /// Child sidecar handles, killed when the app event loop exits.
 #[derive(Default)]
-pub struct Sidecars(pub Mutex<Vec<CommandChild>>);
+pub struct Sidecars {
+    children: Mutex<Vec<(&'static str, CommandChild)>>,
+    /// Set once we start stopping them, so their exit is logged as expected
+    /// rather than as a crash.
+    stopping: AtomicBool,
+}
 
 impl Sidecars {
+    fn push(&self, name: &'static str, child: CommandChild) {
+        self.children.lock().unwrap().push((name, child));
+    }
+
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.load(Ordering::Relaxed)
+    }
+
     pub fn kill_all(&self) {
-        if let Ok(mut children) = self.0.lock() {
-            for child in children.drain(..) {
-                let _ = child.kill();
+        self.stopping.store(true, Ordering::Relaxed);
+        if let Ok(mut children) = self.children.lock() {
+            for (name, child) in children.drain(..) {
+                let pid = child.pid();
+                let result = child.kill();
+                LogEvent::shell("sidecar", "kill")
+                    .level(if result.is_ok() { Level::Info } else { Level::Warn })
+                    .msg(format!("stopping {name} (pid {pid})"))
+                    .data(json!({ "sidecar": name, "pid": pid, "error": result.err().map(|e| e.to_string()) }))
+                    .emit();
             }
         }
     }
@@ -68,6 +98,10 @@ fn load_or_create_secrets(config_path: &Path) -> std::io::Result<Secrets> {
         internal_api_key: hex64(),
     };
     fs::write(config_path, serde_json::to_string_pretty(&secrets).unwrap())?;
+    LogEvent::shell("lifecycle", "secrets.generated")
+        .msg("generated new local service secrets")
+        .data(json!({ "path": config_path }))
+        .emit();
     Ok(secrets)
 }
 
@@ -91,7 +125,7 @@ pub fn load_or_create_installation(
             return Ok(record);
         }
     }
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Local::now().to_rfc3339();
     let record = InstallationRecord {
         installation_id: format!("inst_{}", &hex64()[..16]),
         app_version: app_version.to_string(),
@@ -101,20 +135,34 @@ pub fn load_or_create_installation(
         sample_data_loaded: None,
     };
     fs::write(install_path, serde_json::to_string_pretty(&record).unwrap())?;
+    if let Some(hub) = hub::hub() {
+        hub.set_installation_id(&record.installation_id);
+    }
+    // The very first moment this computer runs the app (on macOS/Linux there
+    // is no installer step, so this is the earliest record there is).
+    LogEvent::shell("lifecycle", "app.install.first_run")
+        .msg(format!(
+            "first run of Jana2U POS {app_version} on this computer"
+        ))
+        .data(json!({ "installation": record, "path": install_path }))
+        .emit();
     Ok(record)
 }
 
 pub fn update_installation_setup(
     install_path: &Path,
+    app_version: &str,
     sample_data_loaded: bool,
 ) -> std::io::Result<InstallationRecord> {
-    let mut record = load_or_create_installation(install_path, "0.5.0")?;
+    let mut record = load_or_create_installation(install_path, app_version)?;
     record.initial_setup_completed = true;
     record.sample_data_loaded = Some(sample_data_loaded);
     fs::write(install_path, serde_json::to_string_pretty(&record).unwrap())?;
+    LogEvent::shell("lifecycle", "app.install.setup_completed")
+        .data(json!({ "installation_id": record.installation_id, "sample_data_loaded": sample_data_loaded }))
+        .emit();
     Ok(record)
 }
-
 
 /// Copy `src` into `dst` recursively, overwriting files that already exist
 /// but never deleting extra files in `dst` (so a shop-added template
@@ -143,9 +191,11 @@ fn sync_render_assets(
     version: &str,
 ) -> std::io::Result<()> {
     let stamp = assets_dir.join(".version");
-    if fs::read_to_string(&stamp).ok().as_deref() == Some(version) {
+    let previous = fs::read_to_string(&stamp).ok();
+    if previous.as_deref() == Some(version) {
         return Ok(());
     }
+    let started = Instant::now();
     for name in ["templates", "fonts"] {
         let src = resource_dir.join("resources").join(name);
         if src.is_dir() {
@@ -154,6 +204,10 @@ fn sync_render_assets(
     }
     fs::create_dir_all(assets_dir)?;
     fs::write(&stamp, version)?;
+    LogEvent::shell("lifecycle", "assets.synced")
+        .msg(format!("render assets refreshed for {version}"))
+        .data(json!({ "from_version": previous, "to_version": version, "duration_ms": started.elapsed().as_millis() }))
+        .emit();
     Ok(())
 }
 
@@ -181,15 +235,28 @@ async fn http_ok(port: u16, path: &str) -> bool {
 }
 
 async fn wait_healthy(name: &str, port: u16, path: &str, timeout: Duration) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
+    let deadline = started + timeout;
+    let mut attempts = 0u32;
     loop {
+        attempts += 1;
         if http_ok(port, path).await {
-            log::info!("{name} is ready on 127.0.0.1:{port}");
+            LogEvent::shell("sidecar", "ready")
+                .msg(format!("{name} is ready on {LOOPBACK}:{port}"))
+                .data(json!({
+                    "sidecar": name, "port": port, "attempts": attempts,
+                    "time_to_ready_ms": started.elapsed().as_millis(),
+                }))
+                .emit();
             return Ok(());
         }
         if Instant::now() >= deadline {
+            LogEvent::shell("sidecar", "health_timeout")
+                .level(Level::Error)
+                .data(json!({ "sidecar": name, "port": port, "attempts": attempts, "timeout_s": timeout.as_secs() }))
+                .emit();
             return Err(format!(
-                "{name} did not become healthy on 127.0.0.1:{port} within {}s",
+                "{name} did not become healthy on {LOOPBACK}:{port} within {}s",
                 timeout.as_secs()
             ));
         }
@@ -200,18 +267,28 @@ async fn wait_healthy(name: &str, port: u16, path: &str, timeout: Duration) -> R
 /// Best-effort kill of sidecar processes left behind by a previous run that
 /// died without running its exit handler (SIGKILL, power loss, a panic).
 /// Runs before we spawn, so a stale backend can't hold `:8080` and make this
-/// launch fail. Safe because both binary names are unique to this app.
+/// launch fail. Safe because every binary name is unique to this app.
 pub fn reap_orphan_sidecars() {
-    let names = ["jana2u-backend", "jana2u-document-server"];
-    for name in names {
+    for spec in SIDECARS {
+        let name = spec.bin;
         #[cfg(windows)]
-        let _ = std::process::Command::new("taskkill")
+        let output = std::process::Command::new("taskkill")
             .args(["/F", "/IM", &format!("{name}.exe")])
             .output();
         #[cfg(not(windows))]
-        let _ = std::process::Command::new("pkill")
+        let output = std::process::Command::new("pkill")
             .args(["-x", name])
             .output();
+        // pkill exits 0 only when it matched (= an orphan really was left).
+        if let Ok(out) = output {
+            if out.status.success() {
+                LogEvent::shell("sidecar", "orphan_reaped")
+                    .level(Level::Warn)
+                    .msg(format!("killed a leftover {name} from a previous run"))
+                    .data(json!({ "sidecar": name }))
+                    .emit();
+            }
+        }
     }
 }
 
@@ -221,55 +298,214 @@ pub fn reap_orphan_sidecars() {
 fn install_signal_handlers(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         #[cfg(unix)]
-        {
+        let signal_name = {
             use tokio::signal::unix::{signal, SignalKind};
             let mut term = signal(SignalKind::terminate()).expect("SIGTERM handler");
             let mut int = signal(SignalKind::interrupt()).expect("SIGINT handler");
             tokio::select! {
-                _ = term.recv() => {},
-                _ = int.recv() => {},
+                _ = term.recv() => "SIGTERM",
+                _ = int.recv() => "SIGINT",
             }
-        }
+        };
         #[cfg(not(unix))]
-        {
+        let signal_name = {
             let _ = tokio::signal::ctrl_c().await;
-        }
-        log::info!("stop signal received — shutting down sidecars");
+            "CTRL_C"
+        };
+        LogEvent::shell("lifecycle", "signal")
+            .msg(format!("{signal_name} received — shutting down sidecars"))
+            .data(json!({ "signal": signal_name }))
+            .emit();
         app.state::<Sidecars>().kill_all();
+        if let Some(hub) = hub::hub() {
+            hub.flush_blocking(Duration::from_secs(2));
+        }
         app.exit(0);
     });
 }
 
-/// Spawn one bundled service, forwarding its stdout/stderr into the app log.
+// ---------------------------------------------------------------------------
+// Sidecar table
+// ---------------------------------------------------------------------------
+
+/// Everything a sidecar's environment may depend on.
+pub struct SidecarCtx {
+    db_dir: PathBuf,
+    assets_dir: PathBuf,
+    generated_docs: PathBuf,
+    secrets: Secrets,
+    installation: InstallationRecord,
+    version: String,
+    log: LogConfig,
+    boot_id: String,
+}
+
+pub struct SidecarSpec {
+    /// Binary name in `externalBin` (without the target-triple suffix).
+    pub bin: &'static str,
+    /// Log `source` label — also its file name under `logs/<day>/`.
+    pub source: &'static str,
+    pub port: u16,
+    pub health_path: &'static str,
+    pub health_timeout: Duration,
+    /// Working directory under `db/`.
+    pub cwd: &'static str,
+    envs: fn(&SidecarCtx) -> Vec<(&'static str, String)>,
+}
+
+/// Start order matters: the backend checks the document-server on boot.
+pub const SIDECARS: &[SidecarSpec] = &[
+    SidecarSpec {
+        bin: "jana2u-document-server",
+        source: "document-server",
+        port: DOCUMENT_SERVER_PORT,
+        health_path: "/api/health",
+        health_timeout: Duration::from_secs(45),
+        cwd: "document-server",
+        envs: |c| {
+            vec![
+                ("DATABASE_URL", "sqlite://document_server.db".into()),
+                (
+                    "TEMPLATES_DIR",
+                    c.assets_dir
+                        .join("templates")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                (
+                    "FONTS_DIR",
+                    c.assets_dir.join("fonts").to_string_lossy().into_owned(),
+                ),
+                ("INTERNAL_API_KEY", c.secrets.internal_api_key.clone()),
+                ("REMOTE_IMAGE_FETCH_ENABLED", "false".into()),
+            ]
+        },
+    },
+    SidecarSpec {
+        bin: "jana2u-backend",
+        source: "backend",
+        port: BACKEND_PORT,
+        health_path: "/api/health",
+        health_timeout: Duration::from_secs(60),
+        cwd: "backend",
+        envs: |c| {
+            vec![
+                ("DATABASE_TYPE", "sqlite".into()),
+                ("DATABASE_URL", "sqlite://pos.db?mode=rwc".into()),
+                ("JWT_SECRET", c.secrets.jwt_secret.clone()),
+                ("JWT_EXPIRY_HOURS", "12".into()),
+                (
+                    "DOCUMENT_SERVER_URL",
+                    format!("http://{LOOPBACK}:{DOCUMENT_SERVER_PORT}"),
+                ),
+                (
+                    "DOCUMENT_SERVER_API_KEY",
+                    c.secrets.internal_api_key.clone(),
+                ),
+                (
+                    "GENERATED_DOCUMENTS_DIR",
+                    c.generated_docs.to_string_lossy().into_owned(),
+                ),
+                ("RETURN_WINDOW_DAYS", "30".into()),
+                ("AUTO_SEED", "false".into()),
+                ("INSTALLATION_ID", c.installation.installation_id.clone()),
+                ("APP_VERSION", c.version.clone()),
+                ("PLATFORM", std::env::consts::OS.to_string()),
+            ]
+        },
+    },
+];
+
+/// Environment every sidecar gets: loopback binding plus the unified-log
+/// contract (JSON lines on stdout, shared boot id, body/SQL verbosity).
+fn common_envs(spec: &SidecarSpec, ctx: &SidecarCtx) -> Vec<(&'static str, String)> {
+    vec![
+        ("BIND_ADDR", LOOPBACK.into()),
+        ("PORT", spec.port.to_string()),
+        ("LOG_FORMAT", "json".into()),
+        ("LOG_SOURCE", spec.source.into()),
+        ("LOG_BOOT_ID", ctx.boot_id.clone()),
+        ("LOG_HTTP_BODIES", ctx.log.http_bodies.to_string()),
+        ("LOG_BODY_CAP_BYTES", ctx.log.body_cap_bytes.to_string()),
+        ("LOG_SQL", ctx.log.sql.clone()),
+        ("NO_COLOR", "1".into()),
+        // `tower_http`'s own trace lines duplicate the services' structured
+        // `http/request` + `http/response` events, so hold it at warn here.
+        ("RUST_LOG", "info,tower_http=warn".into()),
+    ]
+}
+
+/// Spawn one bundled service, ingesting its stdout/stderr into the unified log.
 fn spawn_sidecar(
     app: &AppHandle,
-    bin: &str,
-    cwd: PathBuf,
-    envs: Vec<(&str, String)>,
+    spec: &'static SidecarSpec,
+    ctx: &SidecarCtx,
 ) -> Result<CommandChild, String> {
+    let cwd = ctx.db_dir.join(spec.cwd);
     fs::create_dir_all(&cwd).map_err(|e| format!("create {}: {e}", cwd.display()))?;
+    let mut envs = common_envs(spec, ctx);
+    envs.extend((spec.envs)(ctx));
+
     let mut command = app
         .shell()
-        .sidecar(bin)
-        .map_err(|e| format!("sidecar {bin}: {e}"))?
-        .current_dir(cwd);
+        .sidecar(spec.bin)
+        .map_err(|e| format!("sidecar {}: {e}", spec.bin))?
+        .current_dir(&cwd);
+    let mut env_log = serde_json::Map::new();
     for (k, v) in envs {
+        let shown = if redact::is_sensitive_key(k) {
+            redact::REDACTED.to_string()
+        } else {
+            v.clone()
+        };
+        env_log.insert(k.to_string(), shown.into());
         command = command.env(k, v);
     }
-    let (mut rx, child) = command.spawn().map_err(|e| format!("spawn {bin}: {e}"))?;
-    let tag = bin.to_string();
+    let (mut rx, child) = command.spawn().map_err(|e| {
+        LogEvent::shell("sidecar", "spawn_failed")
+            .level(Level::Error)
+            .data(json!({ "sidecar": spec.bin, "error": e.to_string() }))
+            .emit();
+        format!("spawn {}: {e}", spec.bin)
+    })?;
+    LogEvent::shell("sidecar", "spawned")
+        .msg(format!("started {} (pid {})", spec.bin, child.pid()))
+        .data(json!({ "sidecar": spec.bin, "pid": child.pid(), "cwd": cwd, "port": spec.port, "env": env_log }))
+        .emit();
+
+    let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
-                    log::info!("[{tag}] {}", String::from_utf8_lossy(&line).trim_end())
+                    if let Some(e) = ingest::from_sidecar_line(spec.source, Stream::Stdout, &line) {
+                        e.emit();
+                    }
                 }
                 CommandEvent::Stderr(line) => {
-                    log::warn!("[{tag}] {}", String::from_utf8_lossy(&line).trim_end())
+                    if let Some(e) = ingest::from_sidecar_line(spec.source, Stream::Stderr, &line) {
+                        e.emit();
+                    }
                 }
-                CommandEvent::Error(err) => log::error!("[{tag}] {err}"),
+                CommandEvent::Error(err) => LogEvent::shell("sidecar", "io_error")
+                    .level(Level::Error)
+                    .msg(format!("[{}] {err}", spec.bin))
+                    .data(json!({ "sidecar": spec.bin }))
+                    .emit(),
                 CommandEvent::Terminated(payload) => {
-                    log::error!("[{tag}] exited: {:?}", payload.code)
+                    let expected = app_for_task.state::<Sidecars>().is_stopping();
+                    LogEvent::shell("sidecar", "exited")
+                        .level(if expected { Level::Info } else { Level::Error })
+                        .msg(if expected {
+                            format!("{} stopped", spec.bin)
+                        } else {
+                            format!("{} exited unexpectedly", spec.bin)
+                        })
+                        .data(json!({
+                            "sidecar": spec.bin, "code": payload.code,
+                            "signal": payload.signal, "expected": expected,
+                        }))
+                        .emit();
                 }
                 _ => {}
             }
@@ -280,6 +516,7 @@ fn spawn_sidecar(
 
 /// Full startup sequence, run on a background task from `setup`.
 pub async fn run(app: AppHandle) -> Result<(), String> {
+    let boot_started = Instant::now();
     reap_orphan_sidecars();
     install_signal_handlers(app.clone());
 
@@ -307,94 +544,44 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
     let version = app.package_info().version.to_string();
     let installation = load_or_create_installation(&data_dir.join("installation.json"), &version)
         .map_err(|e| format!("installation record: {e}"))?;
+    let hub = hub::init();
+    hub.set_installation_id(&installation.installation_id);
 
     sync_render_assets(&resource_dir, &assets_dir, &version)
         .map_err(|e| format!("render assets: {e}"))?;
 
-    // --- document-server -------------------------------------------------
-    let doc_child = spawn_sidecar(
-        &app,
-        "jana2u-document-server",
-        db_dir.join("document-server"),
-        vec![
-            ("BIND_ADDR", LOOPBACK.into()),
-            ("PORT", DOCUMENT_SERVER_PORT.to_string()),
-            ("DATABASE_URL", "sqlite://document_server.db".into()),
-            (
-                "TEMPLATES_DIR",
-                assets_dir.join("templates").to_string_lossy().into_owned(),
-            ),
-            (
-                "FONTS_DIR",
-                assets_dir.join("fonts").to_string_lossy().into_owned(),
-            ),
-            ("INTERNAL_API_KEY", secrets.internal_api_key.clone()),
-            ("REMOTE_IMAGE_FETCH_ENABLED", "false".into()),
-            (
-                "RUST_LOG",
-                "document_server=info,tower_http=warn,warn".into(),
-            ),
-        ],
-    )?;
-    app.state::<Sidecars>().0.lock().unwrap().push(doc_child);
-    wait_healthy(
-        "document-server",
-        DOCUMENT_SERVER_PORT,
-        "/api/health",
-        Duration::from_secs(45),
-    )
-    .await?;
+    let ctx = SidecarCtx {
+        db_dir,
+        assets_dir,
+        generated_docs,
+        secrets,
+        installation,
+        version,
+        log: hub.config(),
+        boot_id: hub.context().boot_id,
+    };
 
-    // --- backend -------------------------------------------------------
-    let backend_child = spawn_sidecar(
-        &app,
-        "jana2u-backend",
-        db_dir.join("backend"),
-        vec![
-            ("BIND_ADDR", LOOPBACK.into()),
-            ("PORT", BACKEND_PORT.to_string()),
-            ("DATABASE_TYPE", "sqlite".into()),
-            ("DATABASE_URL", "sqlite://pos.db?mode=rwc".into()),
-            ("JWT_SECRET", secrets.jwt_secret.clone()),
-            ("JWT_EXPIRY_HOURS", "12".into()),
-            (
-                "DOCUMENT_SERVER_URL",
-                format!("http://{LOOPBACK}:{DOCUMENT_SERVER_PORT}"),
-            ),
-            ("DOCUMENT_SERVER_API_KEY", secrets.internal_api_key.clone()),
-            (
-                "GENERATED_DOCUMENTS_DIR",
-                generated_docs.to_string_lossy().into_owned(),
-            ),
-            ("RETURN_WINDOW_DAYS", "30".into()),
-            ("AUTO_SEED", "false".into()),
-            ("INSTALLATION_ID", installation.installation_id.clone()),
-            ("APP_VERSION", version.clone()),
-            ("PLATFORM", std::env::consts::OS.to_string()),
-            (
-                "RUST_LOG",
-                "jana2u_pos_backend=info,tower_http=warn,warn".into(),
-            ),
-        ],
-    )?;
-    app.state::<Sidecars>()
-        .0
-        .lock()
-        .unwrap()
-        .push(backend_child);
-    wait_healthy(
-        "backend",
-        BACKEND_PORT,
-        "/api/health",
-        Duration::from_secs(60),
-    )
-    .await?;
+    for spec in SIDECARS {
+        let child = spawn_sidecar(&app, spec, &ctx)?;
+        app.state::<Sidecars>().push(spec.bin, child);
+        wait_healthy(
+            spec.source,
+            spec.port,
+            spec.health_path,
+            spec.health_timeout,
+        )
+        .await?;
+    }
 
     reveal_main_window(&app)?;
+    LogEvent::shell("lifecycle", "app.ready")
+        .msg("all services healthy, main window shown")
+        .data(json!({ "startup_ms": boot_started.elapsed().as_millis() }))
+        .emit();
     Ok(())
 }
 
-/// Create the main window only now — after both services answer their health
+/// Create the main window only now — after every service answers its health
 /// check — so the frontend's startup auth probe never races an unready backend.
 fn reveal_main_window(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window("main").is_none() {
@@ -421,11 +608,21 @@ fn reveal_main_window(app: &AppHandle) -> Result<(), String> {
 /// Startup failed: surface it, then quit (a half-started POS is worse than a
 /// clear error).
 pub fn fatal(app: &AppHandle, message: &str) {
-    log::error!("startup failed: {message}");
+    let logs_dir = hub::hub()
+        .and_then(|h| h.logs_dir().cloned())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "the app data folder".into());
+    LogEvent::shell("lifecycle", "startup_failed")
+        .level(Level::Fatal)
+        .msg(format!("startup failed: {message}"))
+        .emit();
+    if let Some(hub) = hub::hub() {
+        hub.flush_blocking(Duration::from_secs(2));
+    }
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
     app.dialog()
         .message(format!(
-            "Jana2U POS could not start.\n\n{message}\n\nSee the log for details."
+            "Jana2U POS could not start.\n\n{message}\n\nDetails are in the log folder:\n{logs_dir}"
         ))
         .kind(MessageDialogKind::Error)
         .title("Jana2U POS")

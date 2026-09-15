@@ -32,6 +32,13 @@ pub struct NativeComputeResult {
 /// Returns basic host system specifications.
 #[tauri::command]
 pub fn get_system_specs(app: tauri::AppHandle) -> SystemSpecs {
+    let call = crate::logging::CommandLog::start("get_system_specs", serde_json::json!({}));
+    let specs = system_specs(&app);
+    call.ok(&specs);
+    specs
+}
+
+fn system_specs(app: &tauri::AppHandle) -> SystemSpecs {
     let cpu_cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -47,6 +54,11 @@ pub fn get_system_specs(app: tauri::AppHandle) -> SystemSpecs {
 /// Measures sequential disk write and read speed using an 8 MB temporary buffer.
 #[tauri::command]
 pub async fn benchmark_disk_io() -> Result<DiskIoResult, String> {
+    let call = crate::logging::CommandLog::start("benchmark_disk_io", serde_json::json!({}));
+    call.finish(disk_io().await)
+}
+
+async fn disk_io() -> Result<DiskIoResult, String> {
     tokio::task::spawn_blocking(move || {
         let temp_dir = std::env::temp_dir();
         let test_file = temp_dir.join(format!("jana2u_benchmark_{}.tmp", std::process::id()));
@@ -97,6 +109,11 @@ pub async fn benchmark_disk_io() -> Result<DiskIoResult, String> {
 /// Evaluates single-core vs multi-core mathematical compute throughput and speedup.
 #[tauri::command]
 pub async fn benchmark_native_compute() -> Result<NativeComputeResult, String> {
+    let call = crate::logging::CommandLog::start("benchmark_native_compute", serde_json::json!({}));
+    call.finish(native_compute().await)
+}
+
+async fn native_compute() -> Result<NativeComputeResult, String> {
     tokio::task::spawn_blocking(|| {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
