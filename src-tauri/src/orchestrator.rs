@@ -49,6 +49,35 @@ impl Sidecars {
         self.children.lock().unwrap().push((name, child));
     }
 
+    /// `(log source, pid)` for every running sidecar — used by the benchmark
+    /// to attribute CPU and memory per service.
+    pub fn pids(&self) -> Vec<(&'static str, u32)> {
+        self.children
+            .lock()
+            .map(|children| {
+                children
+                    .iter()
+                    .map(|(bin, child)| (source_for_bin(bin), child.pid()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Write one control line to every sidecar's stdin (see `docs/logging.md`).
+    pub fn broadcast(&self, line: &[u8]) {
+        if let Ok(mut children) = self.children.lock() {
+            for (bin, child) in children.iter_mut() {
+                if let Err(err) = child.write(line) {
+                    LogEvent::shell("sidecar", "control_failed")
+                        .level(Level::Warn)
+                        .msg(format!("could not send a control line to {bin}: {err}"))
+                        .data(json!({ "sidecar": bin }))
+                        .emit();
+                }
+            }
+        }
+    }
+
     pub fn is_stopping(&self) -> bool {
         self.stopping.load(Ordering::Relaxed)
     }
@@ -327,6 +356,14 @@ fn install_signal_handlers(app: AppHandle) {
 // ---------------------------------------------------------------------------
 // Sidecar table
 // ---------------------------------------------------------------------------
+
+/// Log source label for a binary name, from the `SIDECARS` table.
+fn source_for_bin(bin: &str) -> &'static str {
+    SIDECARS
+        .iter()
+        .find(|spec| spec.bin == bin)
+        .map_or("sidecar", |spec| spec.source)
+}
 
 /// Everything a sidecar's environment may depend on.
 pub struct SidecarCtx {

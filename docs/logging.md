@@ -44,8 +44,9 @@ The shell (`src-tauri/src/logging/`) is the only writer. It's the one process al
 instant, and it already owns every sidecar's stdout. A single writer also avoids cross-process
 file-lock problems on Windows.
 
-- **Never blocks.** Producers push onto a bounded queue (100k events). If it overflows, events are
-  dropped and a `system/log.dropped` entry records the count.
+- **Never blocks.** Producers push onto a queue bounded by both count (50k events) and memory
+  (32 MB). Past either limit, events are dropped and a `system/log.dropped` entry records the
+  count — logging is skipped rather than slowing a sale.
 - **Flush policy.** The writer flushes every 250 ms, immediately on `error`/`fatal`, and
   synchronously on exit, update and panic.
 - **Early events.** Events from before the app data folder is known are buffered in memory.
@@ -96,6 +97,84 @@ applies these rules, and the shell applies them again before writing:
   `[data-log-redact]` are logged by length only.
 - **Bodies.** Request and response bodies are capped (32 KB by default). PDFs, uploads and other
   binary content are logged by size only.
+
+## Logging levels
+
+The shell can switch every source's logging at runtime, in memory only
+(`logs/logging.json` is never rewritten, so a crash can't leave a shop with
+logging off). This is what the benchmark below uses.
+
+| Mode | Bodies | SQL | Everything else |
+|---|---|---|---|
+| `off` | no | no | nothing recorded except `category: "benchmark"` markers |
+| `standard` | yes | slow statements only | yes |
+| `full` | yes | every statement | yes |
+
+The default for a normal install is `full` (`logs/logging.json`), adjustable in
+**Settings → Activity Log**.
+
+### Sidecar control contract (stdin)
+
+A sidecar started with `LOG_FORMAT=json` must read lines from **stdin** and
+honour:
+
+```json
+{"cmd":"log_mode","enabled":true,"http_bodies":true,"sql":"slow"}
+```
+
+Unknown commands and malformed lines are ignored, so the shell can add fields
+later. Under Docker/web nothing writes to stdin, so nothing changes there.
+Reference implementation: `backend/src/core/logging/control.rs`, applied by a
+runtime filter in `core::logging::init` plus atomics in `LogSettings`.
+
+## Performance
+
+Logging is designed so it can never stall a sale:
+
+- **Capping is bounded work.** A body is redacted and cut in one pass that stops
+  after the cap (32 KB by default), so logging a 6 MB response costs the same as
+  a small one — `frontend/src/shared/logging/redact.ts`'s `redactAndCap` and
+  `body_for_log` in each service's `core/logging/redact.rs`.
+- **The queue is bounded in bytes, not just events** (32 MB, `src-tauri/src/logging/hub.rs`).
+  Past that, events are dropped and counted (`system/log.dropped`) rather than
+  growing memory.
+- **Writes are batched** every 250 ms on a dedicated thread, flushed at once on
+  errors and on exit.
+
+### Measured cost
+
+Two ways to measure, both comparing `off` / `standard` / `full`:
+
+| | Command-line (real sales) | In-app (simulated) |
+|---|---|---|
+| How | `npm run bench:logging` (`--orders N`, default 1,000) | Settings → System Benchmark → **Measure logging only** |
+| Workload | real POS checkouts against an isolated test database | replays a sale flow that writes no shop data |
+| Reports | `target/benchmark-reports/logging-overhead.{json,md}` | the "What the activity log costs" card, saved in the benchmark report |
+| Measures | CPU seconds, peak RSS and log MB per 1,000 sales, TPS, p50/p95 | the same per 1,000 flows, per process, plus webview self-time |
+
+Re-run the command-line benchmark after any change to capture, ingest or the
+writer, and compare against the table below.
+
+#### Baseline: 1,000 real sales, Apple Silicon (M-series), 2026-09-16
+
+| Logging | CPU / 1,000 sales | Log written / 1,000 sales | Checkout TPS | p95 | 
+|---|---:|---:|---:|---:|
+| off | 0.62 s | — | 1691 | 7.6 ms |
+| standard | 0.80 s (+29%) | 4.3 MB | 1622 (−4%) | 7.7 ms (+0.1) |
+| full | 1.06 s (+71%) | 13.1 MB | 1491 (−12%) | 10.9 ms (+3.3) |
+
+Read it as: with **standard** logging a 1,000-sale day costs about a fifth of a
+CPU-second more and writes ~4 MB (~0.4 MB once gzipped); **full** logging —
+every SQL statement — roughly triples that and is what costs the extra 3 ms at
+p95. Percentages are of the sidecars' own CPU, which is itself under a second
+per 1,000 sales, so in wall-clock terms all three are negligible on a shop PC;
+the reason to prefer `standard` is the p95 and the disk, not the CPU.
+
+Two caveats on memory: the command-line harness runs the log writer as its own
+process (~35 MB, mostly Rust process baseline), while in the desktop app the
+writer lives **inside** the shell process, so the real figure is much smaller —
+the in-app benchmark is the one to trust for memory. Raw report:
+`target/benchmark-reports/logging-overhead.json`.
 
 ## Adding logging
 

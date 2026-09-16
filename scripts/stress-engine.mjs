@@ -17,6 +17,10 @@ const BACKEND_URL = process.env.BACKEND_URL || 'http://127.0.0.1:8080';
 const DOCS_URL = process.env.DOCS_URL || 'http://127.0.0.1:8090';
 const INTERNAL_KEY = process.env.INTERNAL_KEY || '';
 const REPORT_DIR = process.env.REPORT_DIR || './target/benchmark-reports';
+// Activity-log benchmark mode: one checkout tier of N real sales, nothing else,
+// so the only difference between runs is how much is being logged.
+const CHECKOUT_ORDERS = Number(process.env.CHECKOUT_ORDERS || 0);
+const LOGGING_BENCH = process.env.LOGGING_BENCH === '1' && CHECKOUT_ORDERS > 0;
 
 fs.mkdirSync(REPORT_DIR, { recursive: true });
 
@@ -543,11 +547,13 @@ async function main() {
   const templatesDir = path.join(ROOT_DIR, 'document-server', 'templates');
 
   // Suite 1: POS Checkout Tiers
-  const checkoutTiers = [
-    { name: 'Tier 1: Baseline (Normal)', concurrency: 5, totalOrders: 50 },
-    { name: 'Tier 2: Peak Store Traffic', concurrency: 15, totalOrders: 150 },
-    { name: 'Tier 3: High Stress Burst', concurrency: 30, totalOrders: 300 },
-  ];
+  const checkoutTiers = LOGGING_BENCH
+    ? [{ name: `Activity-log benchmark (${CHECKOUT_ORDERS} sales)`, concurrency: 5, totalOrders: CHECKOUT_ORDERS }]
+    : [
+        { name: 'Tier 1: Baseline (Normal)', concurrency: 5, totalOrders: 50 },
+        { name: 'Tier 2: Peak Store Traffic', concurrency: 15, totalOrders: 150 },
+        { name: 'Tier 3: High Stress Burst', concurrency: 30, totalOrders: 300 },
+      ];
 
   const checkoutResults = [];
   for (const tier of checkoutTiers) {
@@ -555,14 +561,15 @@ async function main() {
     checkoutResults.push(res);
   }
 
-  // Suite 2: Typst Document Server Compilation
-  const typstResults = await runTypstDocumentServerBenchmark(templatesDir, 10, 20);
-
-  // Suite 3: SQLite Analytics Queries Under Load
-  const analyticsResults = await runAnalyticsQueryBenchmark(token, 10, 40);
-
-  // Suite 4: Desktop Backup & Restore Stress
-  const backupResults = await runBackupRestoreStressSuite(token);
+  // Suites 2-4 are skipped in activity-log benchmark mode: the checkout suite
+  // alone is what gets compared across logging levels.
+  const typstResults = LOGGING_BENCH
+    ? []
+    : await runTypstDocumentServerBenchmark(templatesDir, 10, 20);
+  const analyticsResults = LOGGING_BENCH ? [] : await runAnalyticsQueryBenchmark(token, 10, 40);
+  const backupResults = LOGGING_BENCH
+    ? { totalRows: 0, sizeKb: 0, exportDurationMs: 0, restoreDurationMs: 0, exportThroughputRowsSec: 0, restoreThroughputRowsSec: 0 }
+    : await runBackupRestoreStressSuite(token);
 
   // Compile final JSON report
   const finalReport = {

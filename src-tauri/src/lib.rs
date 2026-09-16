@@ -1,5 +1,8 @@
 mod benchmark;
-mod logging;
+// `pub` so `examples/log_pipe.rs` can reuse the real ingest + writer pipeline
+// in the command-line logging benchmark. Not part of the app's public API.
+#[doc(hidden)]
+pub mod logging;
 mod orchestrator;
 mod printer;
 
@@ -221,6 +224,8 @@ pub fn run() {
             logging::commands::logs_set_config,
             logging::commands::logs_open_folder,
             logging::commands::logs_export,
+            logging::bench::benchmark_log_mode,
+            logging::bench::benchmark_resource_sample,
         ])
         .manage(Sidecars::default())
         .on_window_event(log_window_event)

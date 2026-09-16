@@ -9,12 +9,40 @@
 
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Options
+#   --logging off|standard|full  activity-log level for the sidecars (default off)
+#   --orders N                   run one checkout tier of N orders instead of
+#                                the three default tiers
+#   --suffix NAME                isolate data/report dirs (used by bench-logging)
+# ---------------------------------------------------------------------------
+LOGGING_MODE="off"
+CHECKOUT_ORDERS=""
+RUN_SUFFIX=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --logging) LOGGING_MODE="${2:-off}"; shift 2 ;;
+    --orders) CHECKOUT_ORDERS="${2:-}"; shift 2 ;;
+    --suffix) RUN_SUFFIX="${2:-}"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+case "${LOGGING_MODE}" in
+  off|standard|full) ;;
+  *) echo "--logging must be off, standard or full" >&2; exit 2 ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
 
-TEST_DIR="${ROOT_DIR}/target/stress-test-data"
-REPORT_DIR="${ROOT_DIR}/target/benchmark-reports"
+TEST_DIR="${ROOT_DIR}/target/stress-test-data${RUN_SUFFIX:+-${RUN_SUFFIX}}"
+REPORT_DIR="${ROOT_DIR}/target/benchmark-reports${RUN_SUFFIX:+/${RUN_SUFFIX}}"
+# Where the activity log is written when --logging is on.
+LOG_DIR="${TEST_DIR}/logs"
+LOG_PIPE="${ROOT_DIR}/src-tauri/target/release/examples/log_pipe"
+# Millisecond-accurate CPU sampler (`ps` only resolves whole seconds).
+PROC_SAMPLE="${ROOT_DIR}/src-tauri/target/release/examples/proc_sample"
 BIN_DIR="${ROOT_DIR}/src-tauri/binaries"
 
 BACKEND_BIN="${BIN_DIR}/jana2u-backend-${TRIPLE}"
@@ -27,12 +55,27 @@ chmod +x "${ROOT_DIR}/scripts/monitor-resources.sh"
 echo "================================================================="
 echo " Jana2U POS Desktop Benchmark & Stress Testing Suite"
 echo " Host Target Triple: ${TRIPLE}"
+echo " Activity log:       ${LOGGING_MODE}"
 echo "================================================================="
 
 # 1. Verify Binaries
 if [ ! -f "${BACKEND_BIN}" ] || [ ! -f "${DOCS_BIN}" ]; then
   echo "==> Binaries missing, building sidecars via scripts/build-sidecars.sh..."
   bash "${ROOT_DIR}/scripts/build-sidecars.sh"
+fi
+
+# 1b. Build the measurement helpers (the same ingest + writer + resource
+#     accounting the desktop shell itself uses)
+if [ ! -x "${PROC_SAMPLE}" ]; then
+  echo "==> Building proc_sample (release)..."
+  (cd "${ROOT_DIR}/src-tauri" && cargo build --release --example proc_sample)
+fi
+if [ "${LOGGING_MODE}" != "off" ]; then
+  if [ ! -x "${LOG_PIPE}" ]; then
+    echo "==> Building log_pipe (release) for activity-log measurement..."
+    (cd "${ROOT_DIR}/src-tauri" && cargo build --release --example log_pipe)
+  fi
+  mkdir -p "${LOG_DIR}"
 fi
 
 # 2. Stage Isolated Assets
@@ -51,33 +94,75 @@ INTERNAL_KEY="bench_internal_key_$(openssl rand -hex 16 2>/dev/null || date +%s%
 lsof -ti :8080 -ti :8090 | xargs kill -9 2>/dev/null || true
 sleep 1
 
+# Activity-log environment for the sidecars (see docs/logging.md).
+if [ "${LOGGING_MODE}" = "off" ]; then
+  LOG_ENV=(LOG_FORMAT=text RUST_LOG="warn")
+else
+  LOG_SQL_MODE="slow"
+  [ "${LOGGING_MODE}" = "full" ] && LOG_SQL_MODE="all"
+  LOG_ENV=(
+    LOG_FORMAT=json
+    LOG_HTTP_BODIES=true
+    LOG_BODY_CAP_BYTES=32768
+    LOG_SQL="${LOG_SQL_MODE}"
+    NO_COLOR=1
+    RUST_LOG="info,tower_http=warn"
+  )
+fi
+
 # 3. Launch document-server
 echo "==> Launching isolated jana2u-document-server on 127.0.0.1:8090..."
-BIND_ADDR="127.0.0.1" \
-PORT="8090" \
-DATABASE_URL="sqlite://${TEST_DIR}/document_server_stress.db" \
-TEMPLATES_DIR="${TEST_DIR}/assets/templates" \
-FONTS_DIR="${TEST_DIR}/assets/fonts" \
-INTERNAL_API_KEY="${INTERNAL_KEY}" \
-REMOTE_IMAGE_FETCH_ENABLED="false" \
-RUST_LOG="document_server=warn,warn" \
-"${DOCS_BIN}" > "${REPORT_DIR}/document_server.log" 2>&1 &
-DOCS_PID=$!
+if [ "${LOGGING_MODE}" = "off" ]; then
+  env "${LOG_ENV[@]}" \
+  BIND_ADDR="127.0.0.1" PORT="8090" \
+  DATABASE_URL="sqlite://${TEST_DIR}/document_server_stress.db" \
+  TEMPLATES_DIR="${TEST_DIR}/assets/templates" \
+  FONTS_DIR="${TEST_DIR}/assets/fonts" \
+  INTERNAL_API_KEY="${INTERNAL_KEY}" \
+  REMOTE_IMAGE_FETCH_ENABLED="false" \
+  "${DOCS_BIN}" > "${REPORT_DIR}/document_server.log" 2>&1 &
+  DOCS_PID=$!
+else
+  # Process substitution keeps $! as the sidecar's own pid while its stdout
+  # flows through the real log ingest + writer.
+  env "${LOG_ENV[@]}" LOG_SOURCE=document-server \
+  BIND_ADDR="127.0.0.1" PORT="8090" \
+  DATABASE_URL="sqlite://${TEST_DIR}/document_server_stress.db" \
+  TEMPLATES_DIR="${TEST_DIR}/assets/templates" \
+  FONTS_DIR="${TEST_DIR}/assets/fonts" \
+  INTERNAL_API_KEY="${INTERNAL_KEY}" \
+  REMOTE_IMAGE_FETCH_ENABLED="false" \
+  "${DOCS_BIN}" > >("${LOG_PIPE}" --source document-server --dir "${LOG_DIR}" \
+    > "${REPORT_DIR}/document_server.log" 2>&1) 2>&1 &
+  DOCS_PID=$!
+fi
 
 # 4. Launch backend
 echo "==> Launching isolated jana2u-backend on 127.0.0.1:8080..."
-BIND_ADDR="127.0.0.1" \
-PORT="8080" \
-DATABASE_TYPE="sqlite" \
-DATABASE_URL="sqlite://${TEST_DIR}/pos_stress.db?mode=rwc" \
-JWT_SECRET="${JWT_SECRET}" \
-JWT_EXPIRY_HOURS="12" \
-DOCUMENT_SERVER_URL="http://127.0.0.1:8090" \
-DOCUMENT_SERVER_API_KEY="${INTERNAL_KEY}" \
-AUTO_SEED="true" \
-RUST_LOG="jana2u_pos_backend=warn,warn" \
-"${BACKEND_BIN}" > "${REPORT_DIR}/backend.log" 2>&1 &
-BACKEND_PID=$!
+if [ "${LOGGING_MODE}" = "off" ]; then
+  env "${LOG_ENV[@]}" \
+  BIND_ADDR="127.0.0.1" PORT="8080" \
+  DATABASE_TYPE="sqlite" \
+  DATABASE_URL="sqlite://${TEST_DIR}/pos_stress.db?mode=rwc" \
+  JWT_SECRET="${JWT_SECRET}" JWT_EXPIRY_HOURS="12" \
+  DOCUMENT_SERVER_URL="http://127.0.0.1:8090" \
+  DOCUMENT_SERVER_API_KEY="${INTERNAL_KEY}" \
+  AUTO_SEED="true" \
+  "${BACKEND_BIN}" > "${REPORT_DIR}/backend.log" 2>&1 &
+  BACKEND_PID=$!
+else
+  env "${LOG_ENV[@]}" LOG_SOURCE=backend \
+  BIND_ADDR="127.0.0.1" PORT="8080" \
+  DATABASE_TYPE="sqlite" \
+  DATABASE_URL="sqlite://${TEST_DIR}/pos_stress.db?mode=rwc" \
+  JWT_SECRET="${JWT_SECRET}" JWT_EXPIRY_HOURS="12" \
+  DOCUMENT_SERVER_URL="http://127.0.0.1:8090" \
+  DOCUMENT_SERVER_API_KEY="${INTERNAL_KEY}" \
+  AUTO_SEED="true" \
+  "${BACKEND_BIN}" > >("${LOG_PIPE}" --source backend --dir "${LOG_DIR}" \
+    > "${REPORT_DIR}/backend.log" 2>&1) 2>&1 &
+  BACKEND_PID=$!
+fi
 
 cleanup() {
   echo ""
@@ -104,8 +189,25 @@ for i in {1..30}; do
 done
 
 # 6. Start Resource Monitor
+# Two files on purpose: one holds the start/end samples CPU time is diffed
+# across, the other the periodic samples peak memory is taken from. One file
+# with two writers would have them overwrite each other.
 RESOURCES_CSV="${REPORT_DIR}/resources.csv"
-"${ROOT_DIR}/scripts/monitor-resources.sh" "${BACKEND_PID}" "${DOCS_PID}" "${RESOURCES_CSV}" &
+PEAKS_CSV="${REPORT_DIR}/resource_peaks.csv"
+MONITOR_TARGETS=("backend=${BACKEND_PID}" "document-server=${DOCS_PID}")
+# Left unset (not an empty array) when logging is off: on bash 3.2 expanding an
+# empty array under `set -u` is an error, hence the ${arr[@]+...} guards below.
+if [ "${LOGGING_MODE}" != "off" ]; then
+  # The log writers are separate processes; their cost belongs in the report.
+  # Matched by command line, so they are tracked however they were started.
+  MONITOR_MATCH=(--match "log_pipe=examples/log_pipe")
+fi
+rm -f "${RESOURCES_CSV}" "${PEAKS_CSV}"
+# Opening sample, before any workload runs.
+"${PROC_SAMPLE}" --csv "${RESOURCES_CSV}" --once \
+  "${MONITOR_TARGETS[@]}" ${MONITOR_MATCH[@]+"${MONITOR_MATCH[@]}"} 2> "${REPORT_DIR}/monitor.err"
+"${PROC_SAMPLE}" --csv "${PEAKS_CSV}" --interval-ms 250 \
+  "${MONITOR_TARGETS[@]}" ${MONITOR_MATCH[@]+"${MONITOR_MATCH[@]}"} 2>> "${REPORT_DIR}/monitor.err" &
 MONITOR_PID=$!
 echo "✅ Resource monitoring active (PID ${MONITOR_PID})"
 
@@ -118,9 +220,16 @@ BACKEND_URL="http://127.0.0.1:8080" \
 DOCS_URL="http://127.0.0.1:8090" \
 INTERNAL_KEY="${INTERNAL_KEY}" \
 REPORT_DIR="${REPORT_DIR}" \
+CHECKOUT_ORDERS="${CHECKOUT_ORDERS}" \
+LOGGING_BENCH="$([ -n "${CHECKOUT_ORDERS}" ] && echo 1 || echo 0)" \
 node "${ROOT_DIR}/scripts/stress-engine.mjs"
 
 # 8. Post-Process Resource Metrics
+# A closing sample first: a short run can otherwise finish inside one sampling
+# interval, leaving nothing to diff CPU time against.
+# Closing sample: CPU time used by the run is this minus the opening sample.
+"${PROC_SAMPLE}" --csv "${RESOURCES_CSV}" --once \
+  "${MONITOR_TARGETS[@]}" ${MONITOR_MATCH[@]+"${MONITOR_MATCH[@]}"} 2>> "${REPORT_DIR}/monitor.err" || true
 kill "${MONITOR_PID}" 2>/dev/null || true
 
 echo ""
@@ -128,16 +237,34 @@ echo "================================================================="
 echo " Analyzing Process Resource Utilization (RSS Memory, CPU, FDs)"
 echo "================================================================="
 
-BACKEND_PEAK_RSS="$(awk -F',' -v pid="${BACKEND_PID}" '$2 == pid {if ($5 > max) max=$5} END {print (max?max:"0")}' "${RESOURCES_CSV}")"
-BACKEND_AVG_CPU="$(awk -F',' -v pid="${BACKEND_PID}" '$2 == pid {sum+=$4; count++} END {if (count>0) printf "%.1f", sum/count; else print "0"}' "${RESOURCES_CSV}")"
-BACKEND_PEAK_FDS="$(awk -F',' -v pid="${BACKEND_PID}" '$2 == pid {if ($6 > max) max=$6} END {print (max?max:"0")}' "${RESOURCES_CSV}")"
+# Peak RSS, CPU seconds used during the run (last sample - first sample), FDs.
+peak_rss() { awk -F',' -v n="$1" '$3 == n {if ($5 > max) max=$5} END {print (max?max:"0")}' "${RESOURCES_CSV}" "${PEAKS_CSV}"; }
+cpu_used() { awk -F',' -v n="$1" '$3 == n {if (first == "") first=$4; last=$4} END {printf "%.3f", (last=="" ? 0 : last - first)}' "${RESOURCES_CSV}"; }
+peak_fds() { awk -F',' -v n="$1" '$3 == n {if ($6 > max) max=$6} END {print (max?max:"0")}' "${RESOURCES_CSV}"; }
 
-DOCS_PEAK_RSS="$(awk -F',' -v pid="${DOCS_PID}" '$2 == pid {if ($5 > max) max=$5} END {print (max?max:"0")}' "${RESOURCES_CSV}")"
-DOCS_AVG_CPU="$(awk -F',' -v pid="${DOCS_PID}" '$2 == pid {sum+=$4; count++} END {if (count>0) printf "%.1f", sum/count; else print "0"}' "${RESOURCES_CSV}")"
-DOCS_PEAK_FDS="$(awk -F',' -v pid="${DOCS_PID}" '$2 == pid {if ($6 > max) max=$6} END {print (max?max:"0")}' "${RESOURCES_CSV}")"
+BACKEND_PEAK_RSS="$(peak_rss backend)"; BACKEND_CPU_S="$(cpu_used backend)"; BACKEND_PEAK_FDS="$(peak_fds backend)"
+DOCS_PEAK_RSS="$(peak_rss document-server)"; DOCS_CPU_S="$(cpu_used document-server)"; DOCS_PEAK_FDS="$(peak_fds document-server)"
+PIPE_CPU_S="$(cpu_used log_pipe)"
+PIPE_PEAK_RSS="$(peak_rss log_pipe)"
+LOG_BYTES="$([ -d "${LOG_DIR}" ] && find "${LOG_DIR}" -name '*.jsonl' -exec cat {} + 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
 
-echo "  jana2u-backend:        Peak RSS: ${BACKEND_PEAK_RSS} MB | Avg CPU: ${BACKEND_AVG_CPU}% | Peak Open FDs: ${BACKEND_PEAK_FDS}"
-echo "  jana2u-document-server: Peak RSS: ${DOCS_PEAK_RSS} MB | Avg CPU: ${DOCS_AVG_CPU}% | Peak Open FDs: ${DOCS_PEAK_FDS}"
+echo "  jana2u-backend:         Peak RSS: ${BACKEND_PEAK_RSS} MB | CPU used: ${BACKEND_CPU_S}s"
+echo "  jana2u-document-server: Peak RSS: ${DOCS_PEAK_RSS} MB | CPU used: ${DOCS_CPU_S}s"
+if [ "${LOGGING_MODE}" != "off" ]; then
+  echo "  log writers:            Peak RSS: ${PIPE_PEAK_RSS} MB | CPU used: ${PIPE_CPU_S}s | Log written: ${LOG_BYTES} bytes"
+fi
+
+# Machine-readable summary for scripts/bench-logging.sh.
+cat > "${REPORT_DIR}/resource_summary.json" <<JSON
+{
+  "loggingMode": "${LOGGING_MODE}",
+  "checkoutOrders": "${CHECKOUT_ORDERS}",
+  "backend": { "peakRssMb": ${BACKEND_PEAK_RSS:-0}, "cpuSeconds": ${BACKEND_CPU_S:-0}, "peakFds": ${BACKEND_PEAK_FDS:-0} },
+  "documentServer": { "peakRssMb": ${DOCS_PEAK_RSS:-0}, "cpuSeconds": ${DOCS_CPU_S:-0}, "peakFds": ${DOCS_PEAK_FDS:-0} },
+  "logWriters": { "peakRssMb": ${PIPE_PEAK_RSS:-0}, "cpuSeconds": ${PIPE_CPU_S:-0} },
+  "logBytes": ${LOG_BYTES:-0}
+}
+JSON
 
 # 9. Format Markdown Report
 JSON_REPORT="${REPORT_DIR}/desktop_stress_report.json"
@@ -183,10 +310,11 @@ md += '| **Full SQLite Export** | ' + data.backupSuite.totalRows + ' | ' + data.
 md += '| **Full Transactional Restore** | ' + data.backupSuite.totalRows + ' | ' + data.backupSuite.sizeKb + ' KB | ' + data.backupSuite.restoreDurationMs.toFixed(2) + ' ms | ' + data.backupSuite.restoreThroughputRowsSec + ' rows/s |\\n';
 
 md += '\\n## 5. Host Process Resource Utilization Profile\\n\\n';
-md += '| Process Component | Peak Memory (RSS) | Average CPU % | Peak Open File Descriptors |\\n';
-md += '| :--- | :---: | :---: | :---: |\\n';
-md += '| **jana2u-backend** (Axum + SQLite WAL) | ' + '${BACKEND_PEAK_RSS}' + ' MB | ' + '${BACKEND_AVG_CPU}' + '% | ' + '${BACKEND_PEAK_FDS}' + ' |\\n';
-md += '| **jana2u-document-server** (Typst Engine) | ' + '${DOCS_PEAK_RSS}' + ' MB | ' + '${DOCS_AVG_CPU}' + '% | ' + '${DOCS_PEAK_FDS}' + ' |\\n';
+md += '| Process Component | Peak Memory (RSS) | CPU Used |\\n';
+md += '| :--- | :---: | :---: |\\n';
+md += '| **jana2u-backend** (Axum + SQLite WAL) | ' + '${BACKEND_PEAK_RSS}' + ' MB | ' + '${BACKEND_CPU_S}' + ' s |\\n';
+md += '| **jana2u-document-server** (Typst Engine) | ' + '${DOCS_PEAK_RSS}' + ' MB | ' + '${DOCS_CPU_S}' + ' s |\\n';
+md += '| **activity log writers** (${LOGGING_MODE}) | ' + '${PIPE_PEAK_RSS}' + ' MB | ' + '${PIPE_CPU_S}' + ' s |\\n';
 
 fs.writeFileSync('${MD_REPORT}', md);
 "

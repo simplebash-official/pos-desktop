@@ -110,15 +110,19 @@ pub fn logs_set_tail(enabled: bool) {
     }
 }
 
+/// The saved config — deliberately not the effective one, so a benchmark's
+/// temporary mode never looks like the user's setting.
 #[tauri::command]
 pub fn logs_get_config() -> Result<LogConfig, String> {
-    Ok(hub::hub().ok_or("logging not initialised")?.config())
+    Ok(hub::hub()
+        .ok_or("logging not initialised")?
+        .persisted_config())
 }
 
 #[tauri::command]
 pub fn logs_set_config(config: LogConfig) -> Result<LogConfig, String> {
     let hub = hub::hub().ok_or("logging not initialised")?;
-    let before = hub.config();
+    let before = hub.persisted_config();
     hub.set_config(config.clone())
         .map_err(|e| format!("save logging config: {e}"))?;
     LogEvent::shell("system", "log.config_changed")

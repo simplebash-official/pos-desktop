@@ -3,6 +3,7 @@
 // append-only JSON Lines under `<app_data_dir>/logs/<day>/<source>.jsonl`.
 // Contract for producers: `docs/logging.md`.
 
+pub mod bench;
 pub mod commands;
 pub mod event;
 pub mod hub;

@@ -81,6 +81,7 @@ End-user runbook: `RELEASE.md`.
 ## Commands
 
 ```bash
+npm run bench:logging            # activity-log overhead: off vs standard vs full (real sales)
 npm install                      # @tauri-apps/cli
 bash scripts/build-sidecars.sh   # compile backend + document-server, stage Typst assets
 npm run tauri dev                # desktop app in dev
@@ -138,6 +139,11 @@ the app bundle — data under `com.jana2u.pos/` is never touched. Details: `src-
   1. Inspect submodule status: `git submodule status` and verify all submodules are up to date with their remotes.
   2. Preview the automated version bump: `scripts/ci/next-version.sh --dry-run`.
   3. Validate conventional commit messages on PR branches to ensure expected release triggers.
+- **Logging Overhead Benchmark** (re-run after any change to `src-tauri/src/logging/`, either service's `core/logging/`, or `frontend/src/shared/logging/`):
+  1. `npm run bench:logging` — real sales (1,000 per mode, `--orders N` to change) against an isolated test DB with the log off/standard/full, piping each sidecar's stdout through the real ingest + writer (`src-tauri/examples/log_pipe.rs`). Report: `target/benchmark-reports/logging-overhead.md`.
+  2. In-app: Settings → System Benchmark → **Measure logging only** (simulated sale flow, writes no shop data).
+  3. Compare against the table in `docs/logging.md` and update it when the numbers move.
+  - Invariants to keep: capping is one bounded pass (O(cap), never stringify a whole body), the hub queue is bounded by **bytes** (32 MB) as well as count, and a benchmark mode is in-memory only — `logs/logging.json` must never be rewritten by it.
 - **Installer & Sidecar Validation**:
   - Test desktop sidecar build script: `bash scripts/build-sidecars.sh`.
   - Check Tauri compilation: `cargo check --manifest-path src-tauri/Cargo.toml`.

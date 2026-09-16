@@ -15,7 +15,8 @@
     "web:build": "docker compose --env-file .env.web build",
     "web:up": "docker compose --env-file .env.web up -d",
     "web:down": "docker compose --env-file .env.web down",
-    "web:logs": "docker compose --env-file .env.web logs -f"
+    "web:logs": "docker compose --env-file .env.web logs -f",
+    "bench:logging": "bash scripts/bench-logging.sh"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
