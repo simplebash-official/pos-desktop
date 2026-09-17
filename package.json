@@ -1,8 +1,8 @@
 {
-  "name": "jana2u-pos-desktop",
+  "name": "myrologic-pos-desktop",
   "version": "0.7.0",
   "private": true,
-  "description": "Tauri desktop bundle of the Jana2U POS frontend + backend + document-server",
+  "description": "Tauri desktop bundle of the MyroLogic POS frontend + backend + document-server",
   "scripts": {
     "tauri": "tauri",
     "sidecars": "bash scripts/build-sidecars.sh",

@@ -2,8 +2,8 @@
 # Builds the backend + document-server release binaries for the host target
 # triple and stages them (plus the Typst templates/fonts) where Tauri's
 # bundler expects them:
-#   src-tauri/binaries/jana2u-<svc>-<triple>[.exe]   (bundle.externalBin)
-#   src-tauri/resources/{templates,fonts}/           (bundle.resources)
+#   src-tauri/binaries/myrologic-<svc>-<triple>[.exe]   (bundle.externalBin)
+#   src-tauri/resources/{templates,fonts}/              (bundle.resources)
 #
 # Run automatically by `tauri build` via beforeBuildCommand; run manually
 # before `tauri dev` (the sidecars must exist for a dev run too).
@@ -18,19 +18,19 @@ case "$TRIPLE" in *windows*) EXE=".exe" ;; esac
 
 mkdir -p "$BIN_DIR" "$RES_DIR"
 
-echo "==> building jana2u-backend ($TRIPLE)"
-cargo build --release --manifest-path "$ROOT/backend/Cargo.toml" --bin jana2u_pos_backend
-cp "$ROOT/backend/target/release/jana2u_pos_backend$EXE" \
-   "$BIN_DIR/jana2u-backend-$TRIPLE$EXE"
+echo "==> building myrologic-backend ($TRIPLE)"
+cargo build --release --manifest-path "$ROOT/backend/Cargo.toml" --bin myrologic_pos_backend
+cp "$ROOT/backend/target/release/myrologic_pos_backend$EXE" \
+   "$BIN_DIR/myrologic-backend-$TRIPLE$EXE"
 
-echo "==> building jana2u-document-server ($TRIPLE)"
+echo "==> building myrologic-document-server ($TRIPLE)"
 cargo build --release --manifest-path "$ROOT/document-server/Cargo.toml" --bin document_server
 cp "$ROOT/document-server/target/release/document_server$EXE" \
-   "$BIN_DIR/jana2u-document-server-$TRIPLE$EXE"
+   "$BIN_DIR/myrologic-document-server-$TRIPLE$EXE"
 
 if [ -z "$EXE" ] && command -v strip >/dev/null 2>&1; then
   echo "==> stripping binaries"
-  strip "$BIN_DIR/jana2u-backend-$TRIPLE" "$BIN_DIR/jana2u-document-server-$TRIPLE" || true
+  strip "$BIN_DIR/myrologic-backend-$TRIPLE" "$BIN_DIR/myrologic-document-server-$TRIPLE" || true
 fi
 
 echo "==> staging Typst templates + fonts"

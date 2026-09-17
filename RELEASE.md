@@ -38,7 +38,7 @@ the next desktop release automatically.
      3. bumps `package.json`,
      4. commits `chore(release): vX.Y.Z [skip ci]` + tags `vX.Y.Z` on `main`,
      5. builds macOS + Linux + Windows and publishes the GitHub Release + `latest.json` to
-        `jana2u-pos-system/releases`.
+        `myrologic/releases`.
 
 That's it. No script, no manual tag.
 
@@ -51,26 +51,26 @@ That's it. No script, no manual tag.
 
 ## Watch (~25 min)
 
-<https://github.com/jana2u-pos-system/compose/actions>
+<https://github.com/myrologic/compose/actions>
 
 `release / prepare` → `desktop-build / version-check` → `build` ×3 (macOS Apple Silicon ·
 Linux · Windows) → `publish`.
 
 `publish` creates the GitHub Release + `latest.json` on
-<https://github.com/jana2u-pos-system/releases>.
+<https://github.com/myrologic/releases>.
 
 ---
 
 ## Verify
 
 ```bash
-curl -sL https://github.com/jana2u-pos-system/releases/releases/latest/download/latest.json | jq .version
+curl -sL https://github.com/myrologic/releases/releases/latest/download/latest.json | jq .version
 # → "0.2.2"
 ```
 
 Then on a machine running the **previous** version: **Settings → Updates → Check for
 updates** → it offers the new version → download → install → restart. Sales and settings
-(`~/Library/Application Support/com.jana2u.pos/` · `%APPDATA%\com.jana2u.pos\`) are untouched.
+(`~/Library/Application Support/com.myrologic.pos/` · `%APPDATA%\com.myrologic.pos\`) are untouched.
 
 ---
 
@@ -107,7 +107,7 @@ git push && git push origin v0.2.2         # the tag push starts the build + pub
 ## Notes
 
 - **First launch of a browser-downloaded build is blocked** (unsigned): macOS "damaged" →
-  `xattr -dr com.apple.quarantine "/Applications/Jana2U POS.app"`; Windows SmartScreen →
+  `xattr -dr com.apple.quarantine "/Applications/MyroLogic POS.app"`; Windows SmartScreen →
   More info → Run anyway. In-app updates after that are clean. See `.github/RELEASING.md`.
 - **`workflow_dispatch`** (Actions → desktop-build → Run workflow) builds all 3 platforms;
   it publishes only if you tick `publish`. Use it to check a build.

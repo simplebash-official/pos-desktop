@@ -80,7 +80,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -m "chore(release): ${{ steps.compute.outputs.tag }} [skip ci]"
-          git tag -a "${{ steps.compute.outputs.tag }}" -m "Jana2U POS desktop ${{ steps.compute.outputs.tag }}"
+          git tag -a "${{ steps.compute.outputs.tag }}" -m "MyroLogic POS desktop ${{ steps.compute.outputs.tag }}"
           git push origin HEAD:main
           git push origin "${{ steps.compute.outputs.tag }}"
 

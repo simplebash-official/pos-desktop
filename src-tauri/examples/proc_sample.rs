@@ -77,7 +77,10 @@ fn main() {
             .map(|meta| meta.len() == 0)
             .unwrap_or(true);
     if needs_header {
-        let _ = writeln!(file, "timestamp_iso,pid,process_name,cpu_seconds,rss_mb,open_fds");
+        let _ = writeln!(
+            file,
+            "timestamp_iso,pid,process_name,cpu_seconds,rss_mb,open_fds"
+        );
     }
     let self_pid = std::process::id();
 

@@ -309,7 +309,7 @@ mod tests {
     use crate::logging::hub::random_hex;
 
     fn fixture() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("jana2u-store-{}", random_hex(8)));
+        let dir = std::env::temp_dir().join(format!("myrologic-store-{}", random_hex(8)));
         for (day, source, lines) in [
             (
                 "2026-09-14",

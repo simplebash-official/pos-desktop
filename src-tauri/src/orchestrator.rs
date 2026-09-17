@@ -27,6 +27,7 @@ use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{sleep, Instant};
 
+use crate::branding;
 use crate::logging::hub::{self, LogConfig};
 use crate::logging::ingest::{self, Stream};
 use crate::logging::{redact, Level, LogEvent};
@@ -171,7 +172,8 @@ pub fn load_or_create_installation(
     // is no installer step, so this is the earliest record there is).
     LogEvent::shell("lifecycle", "app.install.first_run")
         .msg(format!(
-            "first run of Jana2U POS {app_version} on this computer"
+            "first run of {} {app_version} on this computer",
+            branding::PRODUCT_NAME
         ))
         .data(json!({ "installation": record, "path": install_path }))
         .emit();
@@ -393,7 +395,7 @@ pub struct SidecarSpec {
 /// Start order matters: the backend checks the document-server on boot.
 pub const SIDECARS: &[SidecarSpec] = &[
     SidecarSpec {
-        bin: "jana2u-document-server",
+        bin: "myrologic-document-server",
         source: "document-server",
         port: DOCUMENT_SERVER_PORT,
         health_path: "/api/health",
@@ -419,7 +421,7 @@ pub const SIDECARS: &[SidecarSpec] = &[
         },
     },
     SidecarSpec {
-        bin: "jana2u-backend",
+        bin: "myrologic-backend",
         source: "backend",
         port: BACKEND_PORT,
         health_path: "/api/health",
@@ -623,7 +625,7 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
 fn reveal_main_window(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window("main").is_none() {
         let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-            .title("Jana2U POS")
+            .title(app.package_info().name.clone())
             .inner_size(1400.0, 900.0)
             .min_inner_size(1024.0, 640.0)
             .center()
@@ -657,12 +659,13 @@ pub fn fatal(app: &AppHandle, message: &str) {
         hub.flush_blocking(Duration::from_secs(2));
     }
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    let product_name = &app.package_info().name;
     app.dialog()
         .message(format!(
-            "Jana2U POS could not start.\n\n{message}\n\nDetails are in the log folder:\n{logs_dir}"
+            "{product_name} could not start.\n\n{message}\n\nDetails are in the log folder:\n{logs_dir}"
         ))
         .kind(MessageDialogKind::Error)
-        .title("Jana2U POS")
+        .title(product_name.clone())
         .blocking_show();
     app.state::<Sidecars>().kill_all();
     app.exit(1);

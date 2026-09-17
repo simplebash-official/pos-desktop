@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-The **orchestrator / "compose" repo** for **jana2u-pos**. It pulls three private repos in as git
+The **orchestrator / "compose" repo** for **myrologic-pos**. It pulls three private repos in as git
 submodules — `backend` (Rust/Axum API, branch `master`), `document-server` (Rust/Typst PDF service,
-repo `pdf-server`, branch `main`), `frontend` (React/Vite/Mantine PWA, branch `main`) — and adds a
+branch `main`), `frontend` (React/Vite/Mantine PWA, branch `main`) — and adds a
 **Tauri 2.x desktop shell** (`src-tauri/`) that bundles all three as sidecar processes on loopback.
 
 Two deployment targets:
@@ -22,7 +22,7 @@ working under that tree.
 `.github/workflows/release.yml` runs on **every push to `main`**. It reads the Conventional Commit
 messages since the last `v*` tag and, if any are release-worthy, cuts a full desktop release
 (bump `package.json` → pull the 3 submodules to their tips → commit + tag on `main` → build
-macOS/Linux/Windows → publish the GitHub Release + `latest.json` to `jana2u-pos-system/releases`).
+macOS/Linux/Windows → publish the GitHub Release + `latest.json` to `myrologic/releases`).
 
 ### Commit convention (this repo)
 
@@ -100,7 +100,7 @@ Rust gates for `src-tauri/`: `cargo fmt`, `cargo clippy --manifest-path src-taur
 
 Web (service-worker prompt) and desktop (`tauri-plugin-updater` against `latest.json`) are
 independent channels, surfaced together in **Settings → Updates**. Desktop updates only replace
-the app bundle — data under `com.jana2u.pos/` is never touched. Details: `src-tauri/README.md`.
+the app bundle — data under `com.myrologic.pos/` is never touched. Details: `src-tauri/README.md`.
 
 ## Recent Architecture Evolutions (Last 30 Days)
 
@@ -109,7 +109,7 @@ the app bundle — data under `com.jana2u.pos/` is never touched. Details: `src-
    - Pushes to `main` evaluate Conventional Commit prefixes (`scripts/ci/next-version.sh`).
    - `feat:` bumps minor, `fix:`/`perf:` bumps patch, breaking bumps major/minor (`<1.0`). Routine commits (`chore:`, `docs:`, `ci:`, `refactor:`, `test:`) are ignored and do not waste CI runner minutes.
    - `package.json` is the sole version authority (`scripts/set-version.py`). `src-tauri/tauri.conf.json` resolves `"version": "../package.json"` dynamically.
-   - Publishes installers for macOS (Apple Silicon `aarch64`), Windows (NSIS `x86_64`), and Linux (`.deb` / `.AppImage`) alongside the updater manifest `latest.json` in `jana2u-pos-system/releases`.
+   - Publishes installers for macOS (Apple Silicon `aarch64`), Windows (NSIS `x86_64`), and Linux (`.deb` / `.AppImage`) alongside the updater manifest `latest.json` in `myrologic/releases`.
 2. **Sidecar Process Termination & NSIS Hooks (`src-tauri/installer-hooks.nsh`)**:
    - Running background sidecars (`backend` on 8080, `document-server` on 8090) lock executable files on Windows and macOS.
    - Tauri command `prepare_for_update` (invoked before `update.install()` in `UpdatesSection.tsx`) and uninstaller/installer NSIS hooks forcibly stop orphan processes before replacing binaries.

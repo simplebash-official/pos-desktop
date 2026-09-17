@@ -1,11 +1,11 @@
 [package]
-name = "jana2u-pos-desktop"
+name = "myrologic-pos-desktop"
 # Not the app version — see /package.json. tauri.conf.json points its "version"
 # there, and the runtime reads app.package_info().version. This is left frozen
 # on purpose; the release pipeline no longer bumps it.
 version = "0.2.1"
-description = "Tauri desktop bundle of the Jana2U POS frontend + backend + document-server"
-authors = ["Jana2U"]
+description = "Tauri desktop bundle of the MyroLogic POS frontend + backend + document-server"
+authors = ["MyroProject"]
 license = ""
 repository = ""
 edition = "2021"

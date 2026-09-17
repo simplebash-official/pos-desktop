@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# jana2u-pos: Real-Time Process Resource Monitor (CPU time, RSS, FDs)
+# myrologic-pos: Real-Time Process Resource Monitor (CPU time, RSS, FDs)
 #
 # Usage: ./scripts/monitor-resources.sh <OUTPUT_CSV> <NAME=PID> [NAME=PID ...]
 #   e.g. ./scripts/monitor-resources.sh out.csv backend=123 document-server=456

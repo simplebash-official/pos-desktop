@@ -3,7 +3,7 @@ services:
     build:
       context: ./document-server
       dockerfile: Dockerfile
-    container_name: jana2u-document-server
+    container_name: myrologic-document-server
     restart: unless-stopped
     ports:
       - "8090:8090"
@@ -22,7 +22,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: jana2u-backend
+    container_name: myrologic-backend
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -54,7 +54,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: jana2u-seed
+    container_name: myrologic-seed
     entrypoint: ["/app/bin/seed_all"]
     environment:
       - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
@@ -76,8 +76,8 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8080/api}
-        - VITE_APP_NAME=${VITE_APP_NAME:-Jana2U POS}
-    container_name: jana2u-frontend
+        - VITE_APP_NAME=${VITE_APP_NAME:-MyroLogic POS}
+    container_name: myrologic-frontend
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-8081}:80"
@@ -89,7 +89,7 @@ services:
   # Enable with: docker compose -f docker-compose.local.yml --profile mongo up -d
   mongo:
     image: mongo:7.0
-    container_name: jana2u-mongo-local
+    container_name: myrologic-mongo-local
     restart: unless-stopped
     ports:
       - "127.0.0.1:27017:27017"

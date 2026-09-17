@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# jana2u-pos: Activity-log overhead benchmark (real sales)
+# myrologic-pos: Activity-log overhead benchmark (real sales)
 #
 # Runs the same POS checkout workload — real sales against an isolated test
 # database, never shop data — with the activity log off, at standard level and

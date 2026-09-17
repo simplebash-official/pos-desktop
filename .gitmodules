@@ -1,12 +1,12 @@
 [submodule "backend"]
 	path = backend
-	url = git@github.com:jana2u-pos-system/backend.git
+	url = git@github.com:myrologic/backend.git
 	branch = master
 [submodule "document-server"]
 	path = document-server
-	url = git@github.com:jana2u-pos-system/pdf-server.git
+	url = git@github.com:myrologic/document-server.git
 	branch = main
 [submodule "frontend"]
 	path = frontend
-	url = git@github.com:jana2u-pos-system/frontend.git
+	url = git@github.com:myrologic/frontend.git
 	branch = main

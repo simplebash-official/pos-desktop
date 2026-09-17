@@ -1,4 +1,5 @@
 mod benchmark;
+mod branding;
 // `pub` so `examples/log_pipe.rs` can reuse the real ingest + writer pipeline
 // in the command-line logging benchmark. Not part of the app's public API.
 #[doc(hidden)]
@@ -143,7 +144,7 @@ pub fn run() {
     let hub = logging::hub::init();
     logging::install_panic_hook();
     LogEvent::shell("lifecycle", "process.start")
-        .msg("Jana2U POS process started")
+        .msg(format!("{} process started", branding::PRODUCT_NAME))
         .data(json!({
             "pid": std::process::id(),
             "os": std::env::consts::OS,
@@ -237,7 +238,7 @@ pub fn run() {
                     let logs_dir = data_dir.join("logs");
                     hub.attach(&handle, logs_dir.clone(), &version);
                     LogEvent::shell("lifecycle", "app.boot")
-                        .msg(format!("Jana2U POS {version} starting"))
+                        .msg(format!("{} {version} starting", handle.package_info().name))
                         .data(json!({
                             "version": version,
                             "tauri_version": tauri::VERSION,
@@ -275,7 +276,7 @@ pub fn run() {
         RunEvent::Exit => {
             app_handle.state::<Sidecars>().kill_all();
             LogEvent::shell("lifecycle", "app.exit")
-                .msg("Jana2U POS exiting")
+                .msg(format!("{} exiting", app_handle.package_info().name))
                 .emit();
             if let Some(hub) = logging::hub::hub() {
                 hub.flush_blocking(Duration::from_secs(2));

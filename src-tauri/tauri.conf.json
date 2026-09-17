@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Jana2U POS",
+  "productName": "MyroLogic POS",
   "version": "../package.json",
-  "identifier": "com.jana2u.pos",
+  "identifier": "com.myrologic.pos",
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173",
@@ -14,7 +14,7 @@
       {
         "label": "splashscreen",
         "url": "splashscreen.html",
-        "title": "Starting Jana2U POS",
+        "title": "Starting MyroLogic POS",
         "width": 460,
         "height": 300,
         "resizable": false,
@@ -32,7 +32,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFEOEJBQ0MwRkI4NjM2NjQKUldSa05vYjd3S3lMclFad1hNcW5MK2NCSnhvYnFDUE1RaDQ3czJzL2pSaGo2N0tmeUhmaVN0RkMK",
       "endpoints": [
-        "https://github.com/jana2u-pos-system/releases/releases/latest/download/latest.json"
+        "https://github.com/myrologic/releases/releases/latest/download/latest.json"
       ]
     }
   },
@@ -41,8 +41,8 @@
     "targets": ["app", "dmg", "nsis", "appimage"],
     "createUpdaterArtifacts": true,
     "category": "Business",
-    "shortDescription": "Point of sale for Jana2U Service Center",
-    "longDescription": "Offline-first point-of-sale desktop app for Jana2U — billing, repairs, print jobs, inventory, customers and reports, with the API and document renderer bundled as local services.",
+    "shortDescription": "Point of sale for MyroLogic Service Center",
+    "longDescription": "Offline-first point-of-sale desktop app for MyroLogic — billing, repairs, print jobs, inventory, customers and reports, with the API and document renderer bundled as local services.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -50,7 +50,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/jana2u-backend", "binaries/jana2u-document-server"],
+    "externalBin": ["binaries/myrologic-backend", "binaries/myrologic-document-server"],
     "resources": ["resources/templates/**/*", "resources/fonts/**/*"],
     "macOS": {
       "minimumSystemVersion": "10.15",

@@ -163,7 +163,7 @@ pub async fn logs_export(
 
     let dir = logs_dir()?;
     let suggested = format!(
-        "jana2u-logs-{}.zip",
+        "myrologic-logs-{}.zip",
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     );
     // Async command → runs off the main thread, so the blocking dialog is safe.

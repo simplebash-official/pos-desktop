@@ -88,7 +88,7 @@ mod macos {
     ) -> Result<(), String> {
         let temp_dir = std::env::temp_dir();
         let file_name = format!(
-            "jana2u_print_{}_{}.pdf",
+            "myrologic_print_{}_{}.pdf",
             std::process::id(),
             rand::random::<u32>()
         );
