@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-The **orchestrator / "compose" repo** for **simplebash-pos**. It pulls three private repos in as git
-submodules — `backend` (Rust/Axum API, branch `master`), `document-server` (Rust/Typst PDF service,
-branch `main`), `frontend` (React/Vite/Mantine PWA, branch `main`) — and adds a
+The **orchestrator / "pos-compose" repo** for **simplebash-pos**. It pulls three private repos in as git
+submodules — `backend` (repo `pos-backend`, Rust/Axum API, branch `master`), `document-server`
+(repo `document-server` — shared across future apps, not POS-specific, branch `main`), `frontend`
+(repo `pos-frontend`, React/Vite/Mantine PWA, branch `main`) — and adds a
 **Tauri 2.x desktop shell** (`src-tauri/`) that bundles all three as sidecar processes on loopback.
 
 Two deployment targets:

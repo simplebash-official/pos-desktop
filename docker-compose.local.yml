@@ -22,7 +22,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: simplebash-backend
+    container_name: pos-backend
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -54,7 +54,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: simplebash-seed
+    container_name: pos-seed
     entrypoint: ["/app/bin/seed_all"]
     environment:
       - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
@@ -77,7 +77,7 @@ services:
       args:
         - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8080/api}
         - VITE_APP_NAME=${VITE_APP_NAME:-SimpleBash POS}
-    container_name: simplebash-frontend
+    container_name: pos-frontend
     restart: unless-stopped
     ports:
       - "${FRONTEND_PORT:-8081}:80"
