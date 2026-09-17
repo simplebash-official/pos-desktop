@@ -1,4 +1,4 @@
-# MyroLogic POS — desktop bundle (`src-tauri`)
+# SimpleBash POS — desktop bundle (`src-tauri`)
 
 Packages the `frontend`, `backend`, and `document-server` into one installable
 desktop app (Windows + macOS). The two Rust services run as **sidecar child
@@ -21,7 +21,7 @@ processes** on loopback; the webview loads the compiled frontend and talks to
 ## Runtime data
 
 Everything writable lives under the OS app-data dir (`~/Library/Application
-Support/com.myrologic.pos/` on macOS, `%APPDATA%\com.myrologic.pos\` on Windows):
+Support/com.simplebash.pos/` on macOS, `%APPDATA%\com.simplebash.pos\` on Windows):
 
 ```
 config.json                 generated jwt_secret + internal_api_key
@@ -39,12 +39,12 @@ logs/logging.json            logging settings (bodies, SQL, UI trace)
 The activity log is never deleted by the app. Schema, sources and how to add
 logging: [`docs/logging.md`](../docs/logging.md). View it in **Settings → Logs**.
 
-Back up the whole `com.myrologic.pos/` folder.
+Back up the whole `com.simplebash.pos/` folder.
 
 ### Updates and your data
 
 The in-app updater (Settings → Updates) and every installer only replace the
-**application bundle**. Nothing under `com.myrologic.pos/` is touched, so sales,
+**application bundle**. Nothing under `com.simplebash.pos/` is touched, so sales,
 settings, generated PDFs and the generated secrets survive an update. On the
 first launch after a version change, `orchestrator::sync_render_assets` re-lays
 the bundled Typst templates/fonts into `assets/` via `copy_dir_merge`, which
@@ -56,7 +56,7 @@ Updates are delivered through the Tauri updater:
 
 | Piece | Where |
 |---|---|
-| Update feed | `https://github.com/myrologic/releases` → `latest.json` on the newest release |
+| Update feed | `https://github.com/simplebash-official/releases` → `latest.json` on the newest release |
 | Signature check | `plugins.updater.pubkey` in `tauri.conf.json` (minisign; the private key is a CI secret) |
 | Trigger | user clicks **Check for updates** in Settings — no silent/auto install |
 
@@ -83,7 +83,7 @@ Cross-OS builds (Linux AppImage, Windows NSIS, macOS dmg) run in CI on every
 releasable push to `main` (and on a manual `v*` tag) —
 `.github/workflows/desktop-build.yml` builds every platform, signs the updater
 artifacts, and publishes a GitHub Release plus `latest.json` to the public
-`myrologic/releases` repo. OS-level code signing (Apple Developer ID +
+`simplebash-official/releases` repo. OS-level code signing (Apple Developer ID +
 notarization, Windows Authenticode) is still deferred — the bundles are unsigned
 to the OS, but the updater artifacts are cryptographically signed so auto-update
 stays safe.

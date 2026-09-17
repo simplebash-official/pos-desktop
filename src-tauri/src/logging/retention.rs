@@ -116,7 +116,7 @@ mod tests {
     use std::io::Read;
 
     fn tmp_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("myrologic-retention-{}", random_hex(8)));
+        let dir = std::env::temp_dir().join(format!("simplebash-retention-{}", random_hex(8)));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ==============================================================================
-// MyroLogic POS Desktop: Comprehensive High-Concurreny Stress & Benchmark Engine
+// SimpleBash POS Desktop: Comprehensive High-Concurreny Stress & Benchmark Engine
 //
 // Evaluates:
 //   1. End-to-End POS Checkout Latency & TPS under multi-worker concurrency
@@ -215,11 +215,11 @@ async function runPosCheckoutStressSuite(token, products, tier) {
       },
       notes: `Automated stress order #${orderIdx}`,
       shopProfileSnapshot: {
-        shopName: 'MyroLogic POS Benchmark Store',
+        shopName: 'SimpleBash POS Benchmark Store',
         shopAddressLines: ['123 Main St', 'Colombo 03'],
         shopPrimaryPhone: '011-2345678',
-        shopTradingName: 'MyroLogic POS',
-        shopLegalName: 'MyroLogic POS (Pvt) Ltd',
+        shopTradingName: 'SimpleBash POS',
+        shopLegalName: 'SimpleBash POS (Pvt) Ltd',
       },
     };
 
@@ -531,7 +531,7 @@ async function runBackupRestoreStressSuite(token) {
 // -----------------------------------------------------------------------------
 async function main() {
   console.log('================================================================');
-  console.log(' MyroLogic POS Desktop Benchmark & Stress Test Execution');
+  console.log(' SimpleBash POS Desktop Benchmark & Stress Test Execution');
   console.log('================================================================');
   console.log(`Backend URL:        ${BACKEND_URL}`);
   console.log(`Document Server:    ${DOCS_URL}`);

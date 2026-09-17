@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# myrologic-pos: Master Desktop Benchmark & Stress Test Runner
+# simplebash-pos: Master Desktop Benchmark & Stress Test Runner
 #
 # Runs the entire application stack in isolated desktop SQLite mode on loopback,
 # executes comprehensive POS checkout & Typst PDF stress testing, profiles PID
@@ -45,15 +45,15 @@ LOG_PIPE="${ROOT_DIR}/src-tauri/target/release/examples/log_pipe"
 PROC_SAMPLE="${ROOT_DIR}/src-tauri/target/release/examples/proc_sample"
 BIN_DIR="${ROOT_DIR}/src-tauri/binaries"
 
-BACKEND_BIN="${BIN_DIR}/myrologic-backend-${TRIPLE}"
-DOCS_BIN="${BIN_DIR}/myrologic-document-server-${TRIPLE}"
+BACKEND_BIN="${BIN_DIR}/simplebash-backend-${TRIPLE}"
+DOCS_BIN="${BIN_DIR}/simplebash-document-server-${TRIPLE}"
 
 mkdir -p "${TEST_DIR}" "${REPORT_DIR}"
 chmod +x "${ROOT_DIR}/scripts/stress-engine.mjs"
 chmod +x "${ROOT_DIR}/scripts/monitor-resources.sh"
 
 echo "================================================================="
-echo " MyroLogic POS Desktop Benchmark & Stress Testing Suite"
+echo " SimpleBash POS Desktop Benchmark & Stress Testing Suite"
 echo " Host Target Triple: ${TRIPLE}"
 echo " Activity log:       ${LOGGING_MODE}"
 echo "================================================================="
@@ -111,7 +111,7 @@ else
 fi
 
 # 3. Launch document-server
-echo "==> Launching isolated myrologic-document-server on 127.0.0.1:8090..."
+echo "==> Launching isolated simplebash-document-server on 127.0.0.1:8090..."
 if [ "${LOGGING_MODE}" = "off" ]; then
   env "${LOG_ENV[@]}" \
   BIND_ADDR="127.0.0.1" PORT="8090" \
@@ -138,7 +138,7 @@ else
 fi
 
 # 4. Launch backend
-echo "==> Launching isolated myrologic-backend on 127.0.0.1:8080..."
+echo "==> Launching isolated simplebash-backend on 127.0.0.1:8080..."
 if [ "${LOGGING_MODE}" = "off" ]; then
   env "${LOG_ENV[@]}" \
   BIND_ADDR="127.0.0.1" PORT="8080" \
@@ -248,8 +248,8 @@ PIPE_CPU_S="$(cpu_used log_pipe)"
 PIPE_PEAK_RSS="$(peak_rss log_pipe)"
 LOG_BYTES="$([ -d "${LOG_DIR}" ] && find "${LOG_DIR}" -name '*.jsonl' -exec cat {} + 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
 
-echo "  myrologic-backend:         Peak RSS: ${BACKEND_PEAK_RSS} MB | CPU used: ${BACKEND_CPU_S}s"
-echo "  myrologic-document-server: Peak RSS: ${DOCS_PEAK_RSS} MB | CPU used: ${DOCS_CPU_S}s"
+echo "  simplebash-backend:         Peak RSS: ${BACKEND_PEAK_RSS} MB | CPU used: ${BACKEND_CPU_S}s"
+echo "  simplebash-document-server: Peak RSS: ${DOCS_PEAK_RSS} MB | CPU used: ${DOCS_CPU_S}s"
 if [ "${LOGGING_MODE}" != "off" ]; then
   echo "  log writers:            Peak RSS: ${PIPE_PEAK_RSS} MB | CPU used: ${PIPE_CPU_S}s | Log written: ${LOG_BYTES} bytes"
 fi
@@ -275,7 +275,7 @@ import fs from 'node:fs';
 const data = JSON.parse(fs.readFileSync('${JSON_REPORT}', 'utf8'));
 
 let md = '# Desktop Mode Benchmark & Stress Test Report\\n\\n';
-md += '> **Application**: MyroLogic POS Desktop (Tauri v2 + SQLite Engine + Typst Sidecars)\\n';
+md += '> **Application**: SimpleBash POS Desktop (Tauri v2 + SQLite Engine + Typst Sidecars)\\n';
 md += '> **Timestamp**: ' + data.metadata.generatedAt + '\\n';
 md += '> **Environment**: macOS Apple Silicon (' + data.metadata.arch + ') | Node ' + data.metadata.nodeVersion + '\\n\\n';
 
@@ -312,8 +312,8 @@ md += '| **Full Transactional Restore** | ' + data.backupSuite.totalRows + ' | '
 md += '\\n## 5. Host Process Resource Utilization Profile\\n\\n';
 md += '| Process Component | Peak Memory (RSS) | CPU Used |\\n';
 md += '| :--- | :---: | :---: |\\n';
-md += '| **myrologic-backend** (Axum + SQLite WAL) | ' + '${BACKEND_PEAK_RSS}' + ' MB | ' + '${BACKEND_CPU_S}' + ' s |\\n';
-md += '| **myrologic-document-server** (Typst Engine) | ' + '${DOCS_PEAK_RSS}' + ' MB | ' + '${DOCS_CPU_S}' + ' s |\\n';
+md += '| **simplebash-backend** (Axum + SQLite WAL) | ' + '${BACKEND_PEAK_RSS}' + ' MB | ' + '${BACKEND_CPU_S}' + ' s |\\n';
+md += '| **simplebash-document-server** (Typst Engine) | ' + '${DOCS_PEAK_RSS}' + ' MB | ' + '${DOCS_CPU_S}' + ' s |\\n';
 md += '| **activity log writers** (${LOGGING_MODE}) | ' + '${PIPE_PEAK_RSS}' + ' MB | ' + '${PIPE_CPU_S}' + ' s |\\n';
 
 fs.writeFileSync('${MD_REPORT}', md);

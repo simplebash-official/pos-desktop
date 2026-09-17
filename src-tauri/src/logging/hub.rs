@@ -795,7 +795,7 @@ mod tests {
 
     #[test]
     fn writer_appends_to_day_and_source_file() {
-        let tmp = std::env::temp_dir().join(format!("myrologic-logtest-{}", random_hex(8)));
+        let tmp = std::env::temp_dir().join(format!("simplebash-logtest-{}", random_hex(8)));
         let (_tx, rx) = mpsc::sync_channel(1);
         let mut writer = Writer::new(rx);
         writer.dir = Some(tmp.clone());

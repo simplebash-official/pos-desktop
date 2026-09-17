@@ -16,8 +16,8 @@
     {
       "identifier": "shell:allow-execute",
       "allow": [
-        { "name": "binaries/myrologic-backend", "sidecar": true },
-        { "name": "binaries/myrologic-document-server", "sidecar": true }
+        { "name": "binaries/simplebash-backend", "sidecar": true },
+        { "name": "binaries/simplebash-document-server", "sidecar": true }
       ]
     }
   ]

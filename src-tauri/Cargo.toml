@@ -1,11 +1,11 @@
 [package]
-name = "myrologic-pos-desktop"
+name = "simplebash-pos-desktop"
 # Not the app version — see /package.json. tauri.conf.json points its "version"
 # there, and the runtime reads app.package_info().version. This is left frozen
 # on purpose; the release pipeline no longer bumps it.
 version = "0.2.1"
-description = "Tauri desktop bundle of the MyroLogic POS frontend + backend + document-server"
-authors = ["MyroProject"]
+description = "Tauri desktop bundle of the SimpleBash POS frontend + backend + document-server"
+authors = ["SimpleBash"]
 license = ""
 repository = ""
 edition = "2021"

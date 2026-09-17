@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# myrologic-pos: Backend Benchmarking & Profiling Automation Suite
+# simplebash-pos: Backend Benchmarking & Profiling Automation Suite
 #
 # Workflows:
 #   ./scripts/profile-backend.sh bench       # Run Criterion micro-benchmarks with HTML reports
@@ -22,7 +22,7 @@ ACTION="${1:-bench}"
 case "${ACTION}" in
   bench)
     echo "============================================================"
-    echo " Running Criterion Micro-Benchmarks for myrologic-backend"
+    echo " Running Criterion Micro-Benchmarks for simplebash-backend"
     echo "============================================================"
     cd "${BACKEND_DIR}"
     cargo bench --bench engine_benchmarks
@@ -50,7 +50,7 @@ case "${ACTION}" in
     cd "${BACKEND_DIR}"
     FLAMEGRAPH_OUT="${PROFILE_OUT}/flamegraph_backend_$(date +%Y%m%d_%H%M%S).svg"
     echo "Writing flamegraph to ${FLAMEGRAPH_OUT}..."
-    cargo flamegraph --profile profiling --bin myrologic_pos_backend -o "${FLAMEGRAPH_OUT}"
+    cargo flamegraph --profile profiling --bin simplebash_pos_backend -o "${FLAMEGRAPH_OUT}"
     echo "✅ Flamegraph generated: ${FLAMEGRAPH_OUT}"
     ;;
 
@@ -65,10 +65,10 @@ case "${ACTION}" in
 
     cd "${BACKEND_DIR}"
     echo "Building backend with profiling symbols..."
-    cargo build --profile profiling --bin myrologic_pos_backend
+    cargo build --profile profiling --bin simplebash_pos_backend
 
     TRACE_OUT="${PROFILE_OUT}/backend_$(date +%Y%m%d_%H%M%S).trace"
-    BINARY="${BACKEND_DIR}/target/profiling/myrologic_pos_backend"
+    BINARY="${BACKEND_DIR}/target/profiling/simplebash_pos_backend"
 
     echo "Recording trace with xcrun xctrace to ${TRACE_OUT}..."
     echo "Send SIGINT (Ctrl+C) to terminate recording."

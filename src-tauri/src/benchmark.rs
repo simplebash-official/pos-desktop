@@ -61,7 +61,7 @@ pub async fn benchmark_disk_io() -> Result<DiskIoResult, String> {
 async fn disk_io() -> Result<DiskIoResult, String> {
     tokio::task::spawn_blocking(move || {
         let temp_dir = std::env::temp_dir();
-        let test_file = temp_dir.join(format!("myrologic_benchmark_{}.tmp", std::process::id()));
+        let test_file = temp_dir.join(format!("simplebash_benchmark_{}.tmp", std::process::id()));
 
         let size_bytes = 8 * 1024 * 1024; // 8 MB
         let data = vec![0x55u8; size_bytes];

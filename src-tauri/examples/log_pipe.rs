@@ -6,7 +6,7 @@
 //! writer — so the measured CPU, memory and disk are the real pipeline's, just
 //! without a window.
 //!
-//! Usage: `myrologic-backend | log_pipe --source backend --dir /tmp/logs`
+//! Usage: `simplebash-backend | log_pipe --source backend --dir /tmp/logs`
 //!
 //! Every line is also echoed to stdout, so the caller can keep the raw output.
 

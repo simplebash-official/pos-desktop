@@ -1,4 +1,4 @@
-# MyroLogic POS System
+# SimpleBash POS System
 
 Full-stack POS (Point of Sale) system orchestrated via Docker Compose.
 
@@ -16,7 +16,7 @@ Full-stack POS (Point of Sale) system orchestrated via Docker Compose.
 
 ## Build & Deployment Environments
 
-MyroLogic POS supports two distinct operational environments:
+SimpleBash POS supports two distinct operational environments:
 
 1. **Desktop App (Tauri + SQLite)**:
    - Standalone offline POS cashier terminal.
@@ -62,7 +62,7 @@ npm run env:web
 
 # 2. Open .env and set your MongoDB URI & production secrets:
 #    - MONGODB_URI (e.g. your MongoDB Atlas cluster URI)
-#    - MONGODB_DB_NAME=myrologic_pos_prod
+#    - MONGODB_DB_NAME=simplebash_pos_prod
 #    - JWT_SECRET (generate via: openssl rand -hex 32)
 #    - DOCUMENT_SERVER_API_KEY (generate via: openssl rand -hex 32)
 ```
@@ -152,9 +152,9 @@ publishes.
 
 CI builds Linux (AppImage/deb), Windows (NSIS) and macOS (dmg), signs the updater
 artifacts, and publishes a GitHub Release + `latest.json` to the **public**
-`myrologic/releases` repo. Installed apps check that feed from
+`simplebash-official/releases` repo. Installed apps check that feed from
 `Settings → Updates`, download, install and relaunch. Local data
-(`%APPDATA%\com.myrologic.pos\` / `~/Library/Application Support/com.myrologic.pos/`) is
+(`%APPDATA%\com.simplebash.pos\` / `~/Library/Application Support/com.simplebash.pos/`) is
 never touched by an update — see `src-tauri/README.md`.
 
 Emergency / offline path: `scripts/release.sh --auto --bump-submodules` then

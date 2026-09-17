@@ -2,7 +2,7 @@ name: desktop-build
 
 # Builds the Tauri desktop bundle for Linux + Windows + macOS and, when asked to,
 # publishes a GitHub Release + the Tauri updater manifest (`latest.json`) to the
-# public `myrologic/releases` repo.
+# public `simplebash-official/releases` repo.
 #
 # Three ways in:
 #   workflow_call   — `.github/workflows/release.yml` calls this after it has
@@ -17,7 +17,7 @@ name: desktop-build
 #   CI_SUBMODULE_TOKEN                  PAT, Contents:read on backend + pdf-server + frontend + compose
 #   TAURI_SIGNING_PRIVATE_KEY           minisign private key (from `tauri signer generate`)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password ("" if generated without one)
-#   RELEASES_REPO_TOKEN                 PAT, Contents:write on myrologic/releases
+#   RELEASES_REPO_TOKEN                 PAT, Contents:write on simplebash-official/releases
 #
 # OS-level code signing (Apple notarization, Windows Authenticode) is not wired
 # yet — bundles are unsigned to the OS; the updater artifacts are signed.
@@ -222,7 +222,7 @@ jobs:
 
           **macOS** — after moving the app to Applications, run once in Terminal:
           ```
-          xattr -dr com.apple.quarantine "/Applications/MyroLogic POS.app"
+          xattr -dr com.apple.quarantine "/Applications/SimpleBash POS.app"
           ```
           then open it. (Without this, macOS says the app "is damaged" — it isn't;
           the app just isn't Apple-notarized yet.)
@@ -248,7 +248,7 @@ jobs:
             --artifacts artifacts \
             --version "${{ needs.version-check.outputs.version }}" \
             --tag "${TAG}" \
-            --repo myrologic/releases \
+            --repo simplebash-official/releases \
             --notes "$(head -c 2000 CHANGELOG.md)" \
             --out latest.json)
           echo "Assets to upload:"
@@ -261,18 +261,18 @@ jobs:
           echo "--- latest.json ---"
           cat latest.json
 
-      - name: Publish release to myrologic/releases
+      - name: Publish release to simplebash-official/releases
         env:
           GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
         shell: bash
         run: |
           mapfile -t assets < <(printf '%s\n' "${{ steps.manifest.outputs.files }}" | sed '/^$/d')
-          if gh release view "${TAG}" --repo myrologic/releases >/dev/null 2>&1; then
-            gh release upload "${TAG}" --repo myrologic/releases --clobber "${assets[@]}"
+          if gh release view "${TAG}" --repo simplebash-official/releases >/dev/null 2>&1; then
+            gh release upload "${TAG}" --repo simplebash-official/releases --clobber "${assets[@]}"
           else
             gh release create "${TAG}" \
-              --repo myrologic/releases \
-              --title "MyroLogic POS ${TAG}" \
+              --repo simplebash-official/releases \
+              --title "SimpleBash POS ${TAG}" \
               --notes-file NOTES.md \
               "${assets[@]}"
           fi

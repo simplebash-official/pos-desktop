@@ -1,8 +1,8 @@
 {
-  "name": "myrologic-pos-desktop",
+  "name": "simplebash-pos-desktop",
   "version": "0.7.0",
   "private": true,
-  "description": "Tauri desktop bundle of the MyroLogic POS frontend + backend + document-server",
+  "description": "Tauri desktop bundle of the SimpleBash POS frontend + backend + document-server",
   "scripts": {
     "tauri": "tauri",
     "sidecars": "bash scripts/build-sidecars.sh",

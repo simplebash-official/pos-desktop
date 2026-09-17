@@ -395,7 +395,7 @@ pub struct SidecarSpec {
 /// Start order matters: the backend checks the document-server on boot.
 pub const SIDECARS: &[SidecarSpec] = &[
     SidecarSpec {
-        bin: "myrologic-document-server",
+        bin: "simplebash-document-server",
         source: "document-server",
         port: DOCUMENT_SERVER_PORT,
         health_path: "/api/health",
@@ -421,7 +421,7 @@ pub const SIDECARS: &[SidecarSpec] = &[
         },
     },
     SidecarSpec {
-        bin: "myrologic-backend",
+        bin: "simplebash-backend",
         source: "backend",
         port: BACKEND_PORT,
         health_path: "/api/health",

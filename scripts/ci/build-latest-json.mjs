@@ -3,7 +3,7 @@
 //
 //   node scripts/ci/build-latest-json.mjs \
 //     --artifacts artifacts --version 0.2.0 --tag v0.2.0 \
-//     --repo myrologic/releases --notes "$(cat NOTES.md)" \
+//     --repo simplebash-official/releases --notes "$(cat NOTES.md)" \
 //     --out latest.json
 //
 // Layout it expects (one folder per matrix target, produced by upload-artifact
@@ -83,7 +83,7 @@ for (const { triple, key, ext } of TARGETS) {
     if (p !== target) renameSync(p, target);
     return target;
   };
-  const updaterName = `myrologic-pos_${key}${ext}`;
+  const updaterName = `simplebash-pos_${key}${ext}`;
   const artifact = renameTo(foundArtifact, join(dirname(foundArtifact), updaterName));
   const sig = renameTo(foundSig, join(dirname(foundSig), `${updaterName}.sig`));
 
@@ -108,7 +108,7 @@ for (const { triple, key, ext } of TARGETS) {
 
 const manifest = {
   version: args.version,
-  notes: args.notes || `MyroLogic POS ${args.tag}`,
+  notes: args.notes || `SimpleBash POS ${args.tag}`,
   pub_date: new Date().toISOString(),
   platforms,
 };

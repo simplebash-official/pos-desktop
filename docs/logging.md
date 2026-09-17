@@ -1,6 +1,6 @@
 # Desktop activity log
 
-The MyroLogic POS desktop app keeps a permanent, append-only record of everything that happens on
+The SimpleBash POS desktop app keeps a permanent, append-only record of everything that happens on
 the computer, from the first launch (and, on Windows, from the installer) onward: every click,
 typed value, screen change, API call, database statement, business event, PDF render, update,
 print job, crash and process start/stop, each stamped with the real local time, its UTC offset
@@ -12,7 +12,7 @@ output, and the frontend logger is a no-op in a browser.
 ## Where it lives
 
 ```
-<app data>/com.myrologic.pos/logs/
+<app data>/com.simplebash.pos/logs/
   2026-09-15/
     shell.jsonl            the Tauri shell: lifecycle, windows, sidecars, commands, panics
     frontend.jsonl         the webview: UI, navigation, API calls, state, errors, console

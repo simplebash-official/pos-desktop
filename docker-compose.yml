@@ -1,7 +1,7 @@
 services:
   document-server:
-    image: ghcr.io/myrologic/myrologic-document-server:latest
-    container_name: myrologic-document-server
+    image: ghcr.io/simplebash-official/simplebash-document-server:latest
+    container_name: simplebash-document-server
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8090/api/health"]
@@ -18,8 +18,8 @@ services:
     # already point at the right absolute container paths.
 
   backend:
-    image: ghcr.io/myrologic/myrologic-backend:latest
-    container_name: myrologic-backend
+    image: ghcr.io/simplebash-official/simplebash-backend:latest
+    container_name: simplebash-backend
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
@@ -46,8 +46,8 @@ services:
         condition: service_healthy
 
   seed:
-    image: ghcr.io/myrologic/myrologic-backend:latest
-    container_name: myrologic-seed
+    image: ghcr.io/simplebash-official/simplebash-backend:latest
+    container_name: simplebash-seed
     entrypoint: ["/app/bin/seed_all"]
     environment:
       - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
@@ -64,8 +64,8 @@ services:
     profiles: ["seed"]
 
   frontend:
-    image: ghcr.io/myrologic/myrologic-frontend:latest
-    container_name: myrologic-frontend
+    image: ghcr.io/simplebash-official/simplebash-frontend:latest
+    container_name: simplebash-frontend
     restart: unless-stopped
     depends_on:
       backend:
@@ -73,7 +73,7 @@ services:
 
   nginx:
     image: nginx:alpine
-    container_name: myrologic-nginx
+    container_name: simplebash-nginx
     restart: unless-stopped
     ports:
       - "80:80"
@@ -92,7 +92,7 @@ services:
 
   certbot:
     image: certbot/certbot
-    container_name: myrologic-certbot
+    container_name: simplebash-certbot
     volumes:
       - certbot_certs:/etc/letsencrypt
       - certbot_www:/var/www/certbot
@@ -105,7 +105,7 @@ services:
   # And setting `MONGODB_URI=mongodb://mongo:27017` in .env.web.
   mongo:
     image: mongo:7.0
-    container_name: myrologic-mongo
+    container_name: simplebash-mongo
     restart: unless-stopped
     ports:
       - "127.0.0.1:27017:27017"

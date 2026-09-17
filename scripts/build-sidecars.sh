@@ -2,7 +2,7 @@
 # Builds the backend + document-server release binaries for the host target
 # triple and stages them (plus the Typst templates/fonts) where Tauri's
 # bundler expects them:
-#   src-tauri/binaries/myrologic-<svc>-<triple>[.exe]   (bundle.externalBin)
+#   src-tauri/binaries/simplebash-<svc>-<triple>[.exe]   (bundle.externalBin)
 #   src-tauri/resources/{templates,fonts}/              (bundle.resources)
 #
 # Run automatically by `tauri build` via beforeBuildCommand; run manually
@@ -18,19 +18,19 @@ case "$TRIPLE" in *windows*) EXE=".exe" ;; esac
 
 mkdir -p "$BIN_DIR" "$RES_DIR"
 
-echo "==> building myrologic-backend ($TRIPLE)"
-cargo build --release --manifest-path "$ROOT/backend/Cargo.toml" --bin myrologic_pos_backend
-cp "$ROOT/backend/target/release/myrologic_pos_backend$EXE" \
-   "$BIN_DIR/myrologic-backend-$TRIPLE$EXE"
+echo "==> building simplebash-backend ($TRIPLE)"
+cargo build --release --manifest-path "$ROOT/backend/Cargo.toml" --bin simplebash_pos_backend
+cp "$ROOT/backend/target/release/simplebash_pos_backend$EXE" \
+   "$BIN_DIR/simplebash-backend-$TRIPLE$EXE"
 
-echo "==> building myrologic-document-server ($TRIPLE)"
+echo "==> building simplebash-document-server ($TRIPLE)"
 cargo build --release --manifest-path "$ROOT/document-server/Cargo.toml" --bin document_server
 cp "$ROOT/document-server/target/release/document_server$EXE" \
-   "$BIN_DIR/myrologic-document-server-$TRIPLE$EXE"
+   "$BIN_DIR/simplebash-document-server-$TRIPLE$EXE"
 
 if [ -z "$EXE" ] && command -v strip >/dev/null 2>&1; then
   echo "==> stripping binaries"
-  strip "$BIN_DIR/myrologic-backend-$TRIPLE" "$BIN_DIR/myrologic-document-server-$TRIPLE" || true
+  strip "$BIN_DIR/simplebash-backend-$TRIPLE" "$BIN_DIR/simplebash-document-server-$TRIPLE" || true
 fi
 
 echo "==> staging Typst templates + fonts"

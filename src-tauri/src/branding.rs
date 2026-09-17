@@ -4,4 +4,4 @@
 // `app.package_info().name`). Everywhere an `AppHandle` is already in scope,
 // prefer `handle.package_info().name` over this constant so `tauri.conf.json`
 // stays the single canonical source.
-pub const PRODUCT_NAME: &str = "MyroLogic POS";
+pub const PRODUCT_NAME: &str = "SimpleBash POS";

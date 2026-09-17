@@ -12,7 +12,7 @@ bump; `docs`/`chore`/`ci`/`refactor`/`test`/`build`/`style` → nothing) it:
    (pushed with the default `GITHUB_TOKEN`),
 5. calls `.github/workflows/desktop-build.yml` (a reusable workflow) to build
    every OS and publish the GitHub Release + `latest.json` to
-   `myrologic/releases`.
+   `simplebash-official/releases`.
 
 `desktop-build.yml` has three entry points:
 
@@ -34,9 +34,9 @@ braces: the commit message carries `[skip ci]`, and even without it
 OS code signing is deferred, so a **browser-downloaded** bundle is blocked on
 first launch:
 
-- **macOS** → *"MyroLogic POS.app" is damaged and can't be opened.* It is not
+- **macOS** → *"SimpleBash POS.app" is damaged and can't be opened.* It is not
   damaged — macOS quarantines un-notarized apps. Fix once per install:
-  `xattr -dr com.apple.quarantine "/Applications/MyroLogic POS.app"`.
+  `xattr -dr com.apple.quarantine "/Applications/SimpleBash POS.app"`.
 - **Windows** → SmartScreen "unknown publisher" → *More info → Run anyway*.
 
 The in-app updater (`Settings → Updates`) downloads updates programmatically,
@@ -77,8 +77,8 @@ The Tauri updater fetches `latest.json` and the installers over plain HTTPS, so
 they must live in a **public** repo (the source repos stay private):
 
 ```bash
-gh repo create myrologic/releases --public \
-  --description "Auto-published desktop releases for MyroLogic POS. Do not commit here by hand."
+gh repo create simplebash-official/releases --public \
+  --description "Auto-published desktop releases for SimpleBash POS. Do not commit here by hand."
 ```
 
 Add a short `README.md` there explaining it is auto-published.
@@ -87,37 +87,37 @@ Add a short `README.md` there explaining it is auto-published.
 
 ```bash
 npx --prefix . tauri signer generate --ci --password "" \
-  --write-keys ~/.myrologic-updater/myrologic-updater.key
+  --write-keys ~/.simplebash-updater/simplebash-updater.key
 ```
 
 - The **public** key is already in `src-tauri/tauri.conf.json` →
   `plugins.updater.pubkey`. If you regenerate the key, replace it there.
-- Keep `~/.myrologic-updater/myrologic-updater.key` **out of git** and backed up
+- Keep `~/.simplebash-updater/simplebash-updater.key` **out of git** and backed up
   somewhere safe. Losing it means no client can verify future updates.
 
 > A key was generated during initial setup; its public half is committed. Only
 > regenerate if the private key is lost or compromised (then every already-
 > installed client must get one manual update to the new-pubkey build).
 
-### 3. Add repo secrets (this repo — `myrologic/compose`)
+### 3. Add repo secrets (this repo — `simplebash-official/compose`)
 
 | Secret | Value |
 |---|---|
 | `CI_SUBMODULE_TOKEN` | fine-grained PAT, **Contents: Read-only** on `backend`, `pdf-server`, `frontend`, `compose` (the workflow's own `GITHUB_TOKEN` can't read the sibling private repos, so `actions/checkout` needs this for the submodule clones) |
-| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.myrologic-updater/myrologic-updater.key` |
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.simplebash-updater/simplebash-updater.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | empty string (key was generated with no password) |
-| `RELEASES_REPO_TOKEN` | fine-grained PAT, **Contents: Read and write** on `myrologic/releases` |
+| `RELEASES_REPO_TOKEN` | fine-grained PAT, **Contents: Read and write** on `simplebash-official/releases` |
 
 `CI_SUBMODULE_TOKEN` and `RELEASES_REPO_TOKEN` can be the **same** fine-grained PAT if
 you give it Contents: Read+Write on all five repos — least-privilege is two separate
 tokens, convenience is one.
 
 ```bash
-gh secret set CI_SUBMODULE_TOKEN --repo myrologic/compose --body "<paste PAT>"
-gh secret set TAURI_SIGNING_PRIVATE_KEY --repo myrologic/compose \
-  < ~/.myrologic-updater/myrologic-updater.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo myrologic/compose --body ""
-gh secret set RELEASES_REPO_TOKEN --repo myrologic/compose --body "<paste PAT>"
+gh secret set CI_SUBMODULE_TOKEN --repo simplebash-official/compose --body "<paste PAT>"
+gh secret set TAURI_SIGNING_PRIVATE_KEY --repo simplebash-official/compose \
+  < ~/.simplebash-updater/simplebash-updater.key
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo simplebash-official/compose --body ""
+gh secret set RELEASES_REPO_TOKEN --repo simplebash-official/compose --body "<paste PAT>"
 ```
 
 ## Cutting a release
@@ -127,7 +127,7 @@ Normally you don't — merge a `feat:` / `fix:` / `perf:` / breaking commit to
 
 Watch the run: `release / prepare` → `desktop-build / version-check` → 3 `build`
 jobs → `publish`. When it is green,
-`https://github.com/myrologic/releases/releases/latest/download/latest.json`
+`https://github.com/simplebash-official/releases/releases/latest/download/latest.json`
 resolves and installed apps will offer the update.
 
 ### Emergency / offline
@@ -146,7 +146,7 @@ you tick `publish`) — use it to check a build.
 ## Verifying
 
 ```bash
-curl -sL https://github.com/myrologic/releases/releases/latest/download/latest.json | jq
+curl -sL https://github.com/simplebash-official/releases/releases/latest/download/latest.json | jq
 ```
 
 Every `platforms.*` URL must resolve (200) and there must be one entry each for

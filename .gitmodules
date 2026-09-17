@@ -1,12 +1,12 @@
 [submodule "backend"]
 	path = backend
-	url = git@github.com:myrologic/backend.git
+	url = git@github.com:simplebash-official/backend.git
 	branch = master
 [submodule "document-server"]
 	path = document-server
-	url = git@github.com:myrologic/document-server.git
+	url = git@github.com:simplebash-official/document-server.git
 	branch = main
 [submodule "frontend"]
 	path = frontend
-	url = git@github.com:myrologic/frontend.git
+	url = git@github.com:simplebash-official/frontend.git
 	branch = main

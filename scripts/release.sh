@@ -19,7 +19,7 @@
 #
 # The tag push starts `.github/workflows/desktop-build.yml` via its `push: tags`
 # trigger, which builds every OS and publishes the GitHub Release + `latest.json`
-# to `myrologic/releases`.
+# to `simplebash-official/releases`.
 set -euo pipefail
 
 VERSION=""
@@ -70,7 +70,7 @@ python3 "$ROOT/scripts/set-version.py" "$VERSION"
 
 git add package.json frontend backend document-server
 git commit -m "chore(release): ${TAG}"
-git tag -a "${TAG}" -m "MyroLogic POS desktop ${TAG}"
+git tag -a "${TAG}" -m "SimpleBash POS desktop ${TAG}"
 
 echo
 echo "Committed and tagged ${TAG}. Review with:  git show ${TAG}"
