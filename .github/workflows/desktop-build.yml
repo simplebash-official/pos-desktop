@@ -56,6 +56,9 @@ permissions:
 
 jobs:
   version-check:
+    # Same fork guard as release.yml: tag pushes on a fork must not start a build
+    # that needs the official signing/publishing secrets.
+    if: github.repository == 'simplebash-official/pos-compose'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}

@@ -1,11 +1,13 @@
 mod benchmark;
 mod branding;
+mod cloud;
 // `pub` so `examples/log_pipe.rs` can reuse the real ingest + writer pipeline
 // in the command-line logging benchmark. Not part of the app's public API.
 #[doc(hidden)]
 pub mod logging;
 mod orchestrator;
 mod printer;
+mod sync;
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -211,6 +213,21 @@ pub fn run() {
             get_installation_info,
             complete_installation_setup,
             printer::print_pdf_native,
+            cloud::cloud_get_state,
+            cloud::cloud_register,
+            cloud::cloud_login_and_link,
+            cloud::cloud_link_start,
+            cloud::cloud_link_poll,
+            cloud::cloud_unlink,
+            cloud::cloud_set_telemetry,
+            cloud::cloud_ping,
+            sync::sync_get_status,
+            sync::sync_now,
+            sync::sync_pause,
+            sync::sync_resume,
+            sync::sync_list_conflicts,
+            sync::sync_resolve_conflict,
+            sync::sync_bootstrap,
             benchmark::get_system_specs,
             benchmark::benchmark_disk_io,
             benchmark::benchmark_native_compute,
@@ -256,6 +273,17 @@ pub fn run() {
                     .msg(format!("no app data dir, logs stay in memory: {err}"))
                     .emit(),
             }
+            // Optional cloud link. Always managed so its commands resolve; it
+            // reports `enabled: false` (and does nothing) without a cloud URL.
+            let cloud_dir = handle
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("simplebash-pos"));
+            app.manage(cloud::CloudState::new(cloud_dir.clone(), version.clone()));
+            // Sync agent: managed always (its commands resolve), runs only when
+            // cloud sync is enabled and the device is linked.
+            sync::init(app, &handle, cloud_dir);
+            cloud::spawn_launch_ping(handle.clone());
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = orchestrator::run(handle.clone()).await {
                     orchestrator::fatal(&handle, &err);

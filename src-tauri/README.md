@@ -88,6 +88,28 @@ notarization, Windows Authenticode) is still deferred — the bundles are unsign
 to the OS, but the updater artifacts are cryptographically signed so auto-update
 stays safe.
 
+### Building your own copy (forks)
+
+Forks do not have the official signing keys or release repo, and must not
+receive the official update feed. Generate your own updater key and override the
+two settings at build time — no source edit needed:
+
+```bash
+npx tauri signer generate -w ~/.tauri/myfork.key      # prints your public key
+# fork.conf.json
+# { "plugins": { "updater": {
+#     "pubkey": "<your public key>",
+#     "endpoints": ["https://example.com/latest.json"] } } }
+TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/myfork.key)" \
+  npm run tauri build -- --config fork.conf.json
+```
+
+Without a signing key, also set `"bundle": { "createUpdaterArtifacts": false }`
+in the same override file and the build produces plain unsigned installers
+(macOS/Windows will warn about an unidentified developer). The release workflows
+only run on `simplebash-official/pos-compose`; a fork's CI never tries to
+publish.
+
 ### Cutting a release
 
 Automatic — merge a `feat:` / `fix:` / `perf:` / breaking commit to `main` and

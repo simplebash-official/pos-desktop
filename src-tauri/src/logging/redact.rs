@@ -16,7 +16,7 @@ fn sensitive_key_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?i)(password|passwd|pwd|secret|token|authorization|cookie|api[_-]?key|jwt|cvv|card_?number|otp|\bpin\b|^pin$|_pin$|pin_code|pincode)",
+            r"(?i)(password|passwd|pwd|secret|token|authorization|cookie|api[_-]?key|jwt|cvv|card_?number|otp|\bpin\b|^pin$|_pin$|pin_code|pincode|device[_-]?code|^payload$|^changes$|^records?$)",
         )
         .unwrap()
     })
@@ -72,6 +72,40 @@ fn is_redacted(v: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn masks_cloud_link_credentials() {
+        let mut v = json!({
+            "userCode": "ABCD-EFGH",
+            "deviceCode": "dc_secret",
+            "accessToken": "a",
+            "refreshToken": "r"
+        });
+        redact_value(&mut v);
+        assert_eq!(v["deviceCode"], REDACTED);
+        assert_eq!(v["accessToken"], REDACTED);
+        assert_eq!(v["refreshToken"], REDACTED);
+        assert_eq!(v["userCode"], "ABCD-EFGH");
+    }
+
+    #[test]
+    fn masks_sync_record_bodies_but_not_counters() {
+        let mut v = json!({
+            "payload": {"customerName": "A. Perera"},
+            "changes": [{"key": "cust_1"}],
+            "record": {"key": "prod_1"},
+            "pushed": 12,
+            "pendingOut": 3,
+            "serviceToken": "abc"
+        });
+        redact_value(&mut v);
+        assert_eq!(v["payload"], REDACTED);
+        assert_eq!(v["changes"], REDACTED);
+        assert_eq!(v["record"], REDACTED);
+        assert_eq!(v["serviceToken"], REDACTED);
+        assert_eq!(v["pushed"], 12);
+        assert_eq!(v["pendingOut"], 3);
+    }
 
     #[test]
     fn masks_sensitive_keys_at_any_depth() {

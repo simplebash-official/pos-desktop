@@ -32,9 +32,9 @@ use crate::logging::hub::{self, LogConfig};
 use crate::logging::ingest::{self, Stream};
 use crate::logging::{redact, Level, LogEvent};
 
-const BACKEND_PORT: u16 = 8080;
+pub(crate) const BACKEND_PORT: u16 = 8080;
 const DOCUMENT_SERVER_PORT: u16 = 8090;
-const LOOPBACK: &str = "127.0.0.1";
+pub(crate) const LOOPBACK: &str = "127.0.0.1";
 
 /// Child sidecar handles, killed when the app event loop exits.
 #[derive(Default)]
@@ -109,6 +109,16 @@ struct Secrets {
     jwt_secret: String,
     /// document-server `INTERNAL_API_KEY` and backend `DOCUMENT_SERVER_API_KEY`.
     internal_api_key: String,
+}
+
+/// The backend `JWT_SECRET` from `config.json`, for the sync agent to mint its
+/// short-lived service token. `None` until the orchestrator has created it.
+pub fn read_jwt_secret(data_dir: &Path) -> Option<String> {
+    let raw = fs::read_to_string(data_dir.join("config.json")).ok()?;
+    serde_json::from_str::<Secrets>(&raw)
+        .ok()
+        .map(|s| s.jwt_secret)
+        .filter(|s| !s.is_empty())
 }
 
 fn hex64() -> String {

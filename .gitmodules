@@ -1,12 +1,12 @@
 [submodule "backend"]
 	path = backend
-	url = git@github.com:simplebash-official/pos-backend.git
+	url = https://github.com/simplebash-official/pos-backend.git
 	branch = master
 [submodule "document-server"]
 	path = document-server
-	url = git@github.com:simplebash-official/document-server.git
+	url = https://github.com/simplebash-official/document-server.git
 	branch = main
 [submodule "frontend"]
 	path = frontend
-	url = git@github.com:simplebash-official/pos-frontend.git
+	url = https://github.com/simplebash-official/pos-frontend.git
 	branch = main
