@@ -92,6 +92,10 @@ pub struct CloudState {
     version: String,
     build_url: Option<String>,
     pending: Mutex<Option<PendingLink>>,
+    /// Serialises token refreshes: a refresh token is single-use, so two tasks
+    /// refreshing at once would present the same one twice and the identity
+    /// service would revoke the session as stolen.
+    refresh_lock: tokio::sync::Mutex<()>,
 }
 
 /// Payload of the usage ping. Strictly these fields - nothing about the shop,
@@ -141,6 +145,7 @@ impl CloudState {
             version,
             build_url,
             pending: Mutex::new(None),
+            refresh_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -210,8 +215,9 @@ impl CloudState {
     /// A bearer token for the POS cloud. `force_refresh` (after a 401, or when
     /// none is stored) rotates it through the identity service first.
     pub async fn access_token(&self, force_refresh: bool) -> Result<String, CloudError> {
+        let stale = self.secrets.get(KEY_ACCESS).map_err(keychain_err)?;
         if !force_refresh {
-            if let Some(token) = self.secrets.get(KEY_ACCESS).map_err(keychain_err)? {
+            if let Some(token) = stale {
                 return Ok(token);
             }
         }
@@ -220,7 +226,7 @@ impl CloudState {
             http: &self.http,
             base: &base,
         };
-        self.refresh_tokens(&api).await
+        self.refresh_tokens(&api, stale.as_deref()).await
     }
 
     fn store_tokens(&self, access: &str, refresh: &str) -> Result<(), CloudError> {
@@ -414,7 +420,22 @@ impl CloudState {
         }
     }
 
-    async fn refresh_tokens(&self, api: &Api<'_>) -> Result<String, CloudError> {
+    /// Rotates the token pair. `stale` is the access token the caller found
+    /// unusable: if another task already replaced it while this one waited for
+    /// the lock, that fresh token is returned without a second refresh.
+    async fn refresh_tokens(
+        &self,
+        api: &Api<'_>,
+        stale: Option<&str>,
+    ) -> Result<String, CloudError> {
+        let _guard = self.refresh_lock.lock().await;
+        if let (Some(stale), Some(current)) =
+            (stale, self.secrets.get(KEY_ACCESS).map_err(keychain_err)?)
+        {
+            if current != stale {
+                return Ok(current);
+            }
+        }
         let refresh = self
             .secrets
             .get(KEY_REFRESH)
@@ -443,7 +464,7 @@ impl CloudState {
                 if api.delete_device(&device_id, &token).await? {
                     return Ok(());
                 }
-                let fresh = self.refresh_tokens(&api).await?;
+                let fresh = self.refresh_tokens(&api, Some(&token)).await?;
                 api.delete_device(&device_id, &fresh).await.map(|_| ())
             }
             .await;
@@ -643,6 +664,46 @@ mod tests {
     fn approved_body() -> Value {
         json!({ "deviceId": "dev_1", "tenantId": "tnt_1", "shopCode": "myshop",
                 "accessToken": "acc_1", "refreshToken": "ref_1" })
+    }
+
+    #[tokio::test]
+    async fn concurrent_refreshes_present_the_refresh_token_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/auth/refresh"))
+            .and(body_json(json!({ "refreshToken": "ref_1" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "acc_2", "refreshToken": "ref_2", "expiresIn": 900
+            })))
+            // A second use of ref_1 is what makes the identity service revoke
+            // the session, so exactly one request may reach it.
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let f = fixture(Some(server.uri()));
+        f.secrets.set(KEY_ACCESS, "acc_1").unwrap();
+        f.secrets.set(KEY_REFRESH, "ref_1").unwrap();
+
+        let results = tokio::join!(
+            f.state.access_token(true),
+            f.state.access_token(true),
+            f.state.access_token(true),
+            f.state.access_token(true),
+            f.state.access_token(true),
+            f.state.access_token(true),
+            f.state.access_token(true),
+            f.state.access_token(true),
+        );
+        for token in [
+            results.0, results.1, results.2, results.3, results.4, results.5, results.6, results.7,
+        ] {
+            assert_eq!(token.unwrap(), "acc_2");
+        }
+        assert_eq!(
+            f.secrets.get(KEY_REFRESH).unwrap().as_deref(),
+            Some("ref_2")
+        );
     }
 
     #[tokio::test]

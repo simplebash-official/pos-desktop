@@ -31,7 +31,7 @@ tauri-plugin-single-instance = "2.4.4"
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "signal", "sync"] }
 rand = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
