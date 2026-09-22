@@ -115,6 +115,30 @@ pub struct TokenPair {
     pub refresh_token: String,
 }
 
+/// One row of `GET /v1/devices` — every device linked to a tenant, including
+/// this one (callers distinguish "this device" by comparing `deviceId` to the
+/// id stored in `cloud.json`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceView {
+    pub device_id: String,
+    pub tenant_id: String,
+    pub device_name: String,
+    pub os: String,
+    pub app_version: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DevicesListResponse {
+    devices: Vec<DeviceView>,
+}
+
 pub struct Api<'a> {
     pub http: &'a reqwest::Client,
     pub base: &'a str,
@@ -276,6 +300,27 @@ impl Api<'_> {
         }
         let text = resp.text().await.unwrap_or_default();
         Err(error_from_body(status.as_u16(), &text))
+    }
+
+    /// Devices linked to `tenant_id` (or every tenant the account belongs to,
+    /// if `None`), newest first. `err.status == 401` signals a stale token the
+    /// caller should refresh and retry, same convention as elsewhere here.
+    pub async fn list_devices(
+        &self,
+        tenant_id: Option<&str>,
+        bearer: &str,
+    ) -> Result<Vec<DeviceView>, CloudError> {
+        let mut req = self
+            .http
+            .get(self.url("/v1/devices"))
+            .timeout(TIMEOUT)
+            .bearer_auth(bearer);
+        if let Some(t) = tenant_id {
+            req = req.query(&[("tenantId", t)]);
+        }
+        let resp = req.send().await.map_err(CloudError::network)?;
+        let parsed: DevicesListResponse = read_json(resp).await?;
+        Ok(parsed.devices)
     }
 
     pub async fn telemetry_ping(&self, payload: &Value) -> Result<(), CloudError> {

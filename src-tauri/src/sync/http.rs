@@ -219,6 +219,23 @@ impl LocalApi {
         self.typed(Method::GET, "/api/sync/state", &[], None).await
     }
 
+    /// The distinct SKU block families (e.g. "PHO-SCR") this device's local
+    /// catalog currently needs a cloud-reserved number block for — the agent
+    /// has no other way to discover which `sku:<prefix>` names to keep
+    /// topped up, since SKU has no single fixed name the way invoice does.
+    pub async fn sku_prefixes(&self) -> Result<Vec<String>, SyncError> {
+        let value = self
+            .call(Method::GET, "/api/sync/sku-prefixes", &[], None)
+            .await?;
+        serde_json::from_value(
+            value
+                .get("prefixes")
+                .cloned()
+                .unwrap_or(Value::Array(vec![])),
+        )
+        .map_err(|e| SyncError::new(ErrorKind::Local, "BAD_RESPONSE", e.to_string(), 0))
+    }
+
     pub async fn set_clock_offset(&self, offset_ms: i64) -> Result<(), SyncError> {
         self.call(
             Method::POST,

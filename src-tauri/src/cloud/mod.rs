@@ -22,7 +22,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::logging::{CommandLog, Level, LogEvent};
 pub use api::CloudError;
-use api::{Api, ApprovedLink, LinkStartResponse, PollResult};
+use api::{Api, ApprovedLink, DeviceView, LinkStartResponse, PollResult};
 use store::{CloudFile, KeyringStore, SecretStore, KEY_ACCESS, KEY_DEVICE, KEY_REFRESH};
 
 /// Compile-time default; `None` disables the feature for builds without it.
@@ -485,6 +485,39 @@ impl CloudState {
         Ok(self.view())
     }
 
+    /// Devices linked to this tenant, including this one — the caller
+    /// distinguishes "this device" by comparing `deviceId` to `cloud.json`'s.
+    pub async fn list_devices(&self) -> Result<Vec<DeviceView>, CloudError> {
+        let (base, file) = self.enabled()?;
+        let api = Api {
+            http: &self.http,
+            base: &base,
+        };
+        let token = self.access_token(false).await?;
+        match api.list_devices(file.tenant_id.as_deref(), &token).await {
+            Err(err) if err.status == 401 => {
+                let fresh = self.access_token(true).await?;
+                api.list_devices(file.tenant_id.as_deref(), &fresh).await
+            }
+            other => other,
+        }
+    }
+
+    /// Revokes a device other than this one (unlinking this one is `unlink`).
+    pub async fn revoke_device(&self, device_id: &str) -> Result<(), CloudError> {
+        let (base, _) = self.enabled()?;
+        let api = Api {
+            http: &self.http,
+            base: &base,
+        };
+        let token = self.access_token(false).await?;
+        if api.delete_device(device_id, &token).await? {
+            return Ok(());
+        }
+        let fresh = self.access_token(true).await?;
+        api.delete_device(device_id, &fresh).await.map(|_| ())
+    }
+
     pub fn set_telemetry(&self, enabled: bool) -> Result<CloudStateView, CloudError> {
         self.enabled()?;
         let mut file = CloudFile::load(&self.dir);
@@ -602,6 +635,23 @@ pub async fn cloud_link_poll(state: State<'_, CloudState>) -> Result<LinkPollVie
 pub async fn cloud_unlink(state: State<'_, CloudState>) -> Result<CloudStateView, CloudError> {
     let call = CommandLog::start("cloud_unlink", json!({}));
     call.finish(state.unlink().await)
+}
+
+#[tauri::command]
+pub async fn cloud_list_devices(
+    state: State<'_, CloudState>,
+) -> Result<Vec<DeviceView>, CloudError> {
+    let call = CommandLog::start("cloud_list_devices", json!({}));
+    call.finish(state.list_devices().await)
+}
+
+#[tauri::command]
+pub async fn cloud_revoke_device(
+    state: State<'_, CloudState>,
+    device_id: String,
+) -> Result<(), CloudError> {
+    let call = CommandLog::start("cloud_revoke_device", json!({ "deviceId": device_id }));
+    call.finish(state.revoke_device(&device_id).await)
 }
 
 #[tauri::command]
@@ -914,6 +964,100 @@ mod tests {
         assert!(f.secrets.get(KEY_DEVICE).unwrap().is_none());
         // The user's telemetry choice survives an unlink.
         assert_eq!(CloudFile::load(f.dir.path()).telemetry_enabled, Some(false));
+    }
+
+    fn linked_fixture(server_uri: &str) -> Fixture {
+        let f = fixture(Some(server_uri.to_string()));
+        CloudFile {
+            device_id: Some("dev_1".into()),
+            tenant_id: Some("tnt_1".into()),
+            account_email: Some("o@shop.lk".into()),
+            ..Default::default()
+        }
+        .save(f.dir.path())
+        .unwrap();
+        f.secrets.set(KEY_ACCESS, "acc_1").unwrap();
+        f.secrets.set(KEY_REFRESH, "ref_1").unwrap();
+        f
+    }
+
+    fn device_row(id: &str, revoked: bool) -> Value {
+        json!({
+            "deviceId": id, "tenantId": "tnt_1", "deviceName": "Front counter",
+            "os": "macos", "appVersion": "0.7.0", "createdAt": "2026-01-01T00:00:00Z",
+            "lastSeenAt": "2026-01-02T00:00:00Z", "revoked": revoked
+        })
+    }
+
+    #[tokio::test]
+    async fn list_devices_scopes_to_the_linked_tenant() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/devices"))
+            .and(header("authorization", "Bearer acc_1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({ "devices": [device_row("dev_1", false), device_row("dev_2", false)] }),
+            ))
+            .mount(&server)
+            .await;
+        let f = linked_fixture(&server.uri());
+
+        let devices = f.state.list_devices().await.unwrap();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].device_id, "dev_1");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].url.query(), Some("tenantId=tnt_1"));
+    }
+
+    #[tokio::test]
+    async fn list_devices_refreshes_once_after_a_stale_token_and_retries() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/devices"))
+            .and(header("authorization", "Bearer acc_1"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/auth/refresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "acc_2", "refreshToken": "ref_2"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/devices"))
+            .and(header("authorization", "Bearer acc_2"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "devices": [device_row("dev_1", false)] })),
+            )
+            .mount(&server)
+            .await;
+        let f = linked_fixture(&server.uri());
+
+        let devices = f.state.list_devices().await.unwrap();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(f.secrets.get(KEY_ACCESS).unwrap().as_deref(), Some("acc_2"));
+    }
+
+    #[tokio::test]
+    async fn revoke_device_deletes_a_different_device_and_leaves_this_one_linked() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/v1/devices/dev_2"))
+            .and(header("authorization", "Bearer acc_1"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let f = linked_fixture(&server.uri());
+
+        f.state.revoke_device("dev_2").await.unwrap();
+        // Revoking another device never touches this device's own link.
+        assert!(f.state.view().linked);
+        assert_eq!(f.secrets.get(KEY_ACCESS).unwrap().as_deref(), Some("acc_1"));
     }
 
     #[test]

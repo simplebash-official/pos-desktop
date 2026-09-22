@@ -219,6 +219,8 @@ pub fn run() {
             cloud::cloud_link_start,
             cloud::cloud_link_poll,
             cloud::cloud_unlink,
+            cloud::cloud_list_devices,
+            cloud::cloud_revoke_device,
             cloud::cloud_set_telemetry,
             cloud::cloud_ping,
             sync::sync_get_status,

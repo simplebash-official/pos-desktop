@@ -32,13 +32,21 @@ pub const BLOCK_CHECK_INTERVAL: Duration = Duration::from_secs(20 * 60);
 pub const CLOCK_RESYNC_THRESHOLD_MS: i64 = 500;
 
 /// Sequences the cloud can reserve blocks for, with the block size to request.
+/// SKU is deliberately absent — it has no single fixed name (one block family
+/// per category+subcategory prefix, e.g. "sku:PHO-SCR"), so it's discovered
+/// and topped up separately; see `skus_due`/`SKU_BLOCK_SIZE`.
 pub const BLOCK_NAMES: &[(&str, u64)] = &[
     ("invoice", 100),
     ("creditNote", 100),
     ("repair", 100),
     ("printJob", 100),
     ("purchase", 100),
+    ("barcode", 200),
 ];
+
+/// Block size for a `sku:<prefix>` family — smaller than invoice/etc. since
+/// demand per category is usually much lower.
+pub const SKU_BLOCK_SIZE: u64 = 50;
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -117,6 +125,28 @@ pub fn blocks_due(
             },
         )
         .copied()
+        .collect()
+}
+
+/// Same "when is a block due" rule as `blocks_due`, for the dynamically
+/// discovered `sku:<prefix>` families — these can't live in the `'static`
+/// `BLOCK_NAMES` list since they come from the local catalog at runtime.
+pub fn skus_due(have: &[BlockInfo], prefixes: &[String], periodic_check: bool) -> Vec<String> {
+    prefixes
+        .iter()
+        .filter(|prefix| {
+            let name = format!("sku:{prefix}");
+            match have.iter().find(|b| b.name.eq_ignore_ascii_case(&name)) {
+                None => true,
+                Some(b) if b.block_size == 0 => true,
+                Some(b) => {
+                    let consumed_60 = b.remaining * 100 <= b.block_size * 40;
+                    let half_or_less = b.remaining * 2 <= b.block_size;
+                    consumed_60 || (periodic_check && half_or_less)
+                }
+            }
+        })
+        .cloned()
         .collect()
 }
 
@@ -389,40 +419,70 @@ impl Agent {
         };
         let mut reserved = 0;
         for (name, size) in blocks_due(&state.number_blocks, BLOCK_NAMES, periodic) {
-            match self.cloud.reserve_block(name, size, &self.device_id).await {
-                Ok(block) => {
-                    self.local
-                        .put_block(&json!({
-                            "name": name,
-                            "prefix": block.get("prefix"),
-                            "padding": block.get("padding"),
-                            "start": block.get("start"),
-                            "end": block.get("end"),
-                            "expiresAt": block.get("expiresAt"),
-                        }))
-                        .await?;
-                    reserved += 1;
-                }
-                Err(e)
-                    if matches!(
-                        e.kind,
-                        ErrorKind::Offline | ErrorKind::Revoked | ErrorKind::Unauthorized
-                    ) =>
-                {
-                    return Err(e)
-                }
-                Err(e) => {
-                    LogEvent::shell("sync", "blocks.reserve_failed")
-                        .level(Level::Warn)
-                        .data(json!({ "name": name, "code": e.code }))
-                        .emit();
+            reserved += self.reserve_one_block(name, size).await?;
+        }
+
+        // SKU has no fixed name — discover which category+subcategory
+        // prefixes the local catalog actually has, then top up each one the
+        // same way. A failure to even list them (e.g. the local backend is
+        // briefly unreachable) is logged and skipped, same as an individual
+        // reservation failure below — it must never abort the other families.
+        match self.local.sku_prefixes().await {
+            Ok(prefixes) => {
+                for prefix in skus_due(&state.number_blocks, &prefixes, periodic) {
+                    let name = format!("sku:{prefix}");
+                    reserved += self.reserve_one_block(&name, SKU_BLOCK_SIZE).await?;
                 }
             }
+            Err(e) => {
+                LogEvent::shell("sync", "sku_prefixes.list_failed")
+                    .level(Level::Warn)
+                    .data(json!({ "code": e.code }))
+                    .emit();
+            }
         }
+
         if periodic {
             *self.last_block_check.lock().unwrap() = Some(Instant::now());
         }
         Ok(reserved)
+    }
+
+    /// Reserves one block by `name` from the cloud and stores it locally.
+    /// Returns `1` on success, `0` on a failure worth only logging (an
+    /// `Offline`/`Revoked`/`Unauthorized` failure instead propagates, since
+    /// those mean the whole cycle should stop, not just this one block).
+    async fn reserve_one_block(&self, name: &str, size: u64) -> Result<usize, SyncError> {
+        match self.cloud.reserve_block(name, size, &self.device_id).await {
+            Ok(block) => {
+                self.local
+                    .put_block(&json!({
+                        "name": name,
+                        "prefix": block.get("prefix"),
+                        "padding": block.get("padding"),
+                        "start": block.get("start"),
+                        "end": block.get("end"),
+                        "expiresAt": block.get("expiresAt"),
+                    }))
+                    .await?;
+                Ok(1)
+            }
+            Err(e)
+                if matches!(
+                    e.kind,
+                    ErrorKind::Offline | ErrorKind::Revoked | ErrorKind::Unauthorized
+                ) =>
+            {
+                Err(e)
+            }
+            Err(e) => {
+                LogEvent::shell("sync", "blocks.reserve_failed")
+                    .level(Level::Warn)
+                    .data(json!({ "name": name, "code": e.code }))
+                    .emit();
+                Ok(0)
+            }
+        }
     }
 }
 
@@ -510,11 +570,18 @@ mod tests {
             .mount(&f.cloud)
             .await;
         // Every other sequence is missing locally, so blocks get reserved.
+        // `[^/]+` (not just `[A-Za-z]+`) so this also matches a `sku:<prefix>`
+        // name, which contains a colon and a hyphen.
         Mock::given(method("POST"))
-            .and(wiremock::matchers::path_regex(r"^/api/sequences/[A-Za-z]+/reserve$"))
+            .and(wiremock::matchers::path_regex(r"^/api/sequences/[^/]+/reserve$"))
             .respond_with(ok(json!({ "prefix": "X-", "padding": 6, "start": 1, "end": 100, "expiresAt": "2030-01-01T00:00:00Z" })))
             .mount(&f.cloud)
             .await;
+        // No mock for GET /api/sync/sku-prefixes here on purpose: an
+        // unmatched wiremock request answers 404, which `top_up_blocks`
+        // already treats as "no SKU prefixes to top up" (logged, not fatal) —
+        // exactly the behaviour every OTHER test using this helper wants. A
+        // test that cares about SKU blocks specifically mounts its own.
         Mock::given(method("POST"))
             .and(path("/api/sync/blocks"))
             .respond_with(ok(json!({})))
@@ -586,6 +653,67 @@ mod tests {
             .unwrap()
             .iter()
             .any(|s| s.state == SyncPhase::Syncing));
+    }
+
+    #[tokio::test]
+    async fn linked_agent_tops_up_sku_and_barcode_blocks_alongside_the_fixed_families() {
+        let f = fixture().await;
+        mount_quiet_cloud(&f).await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/sku-prefixes"))
+            .respond_with(ok(json!({ "prefixes": ["PHO-SCR"] })))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            // No blocks held at all: every fixed family AND the discovered
+            // SKU prefix must be reserved this cycle.
+            .respond_with(ok(json!({
+                "deviceId": "dev_local", "linked": true, "captureEnabled": true,
+                "cloudCursor": 5, "lastPushedOutboxSeq": 3, "clockOffsetMs": 0,
+                "pendingOut": 0, "conflictsOpen": 0, "localHasData": true,
+                "numberBlocks": [],
+            })))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(outbox(&[])))
+            .mount(&f.local)
+            .await;
+
+        let report = f.agent.cycle().await.unwrap();
+        assert_eq!(report.blocks_reserved, BLOCK_NAMES.len() + 1);
+
+        let stored: Vec<String> = body_of(&f.local, "/api/sync/blocks")
+            .await
+            .iter()
+            .map(|b| b["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(stored.contains(&"barcode".to_string()), "{stored:?}");
+        assert!(stored.contains(&"sku:PHO-SCR".to_string()), "{stored:?}");
+        assert!(stored.contains(&"invoice".to_string()), "{stored:?}");
+
+        // The cloud actually saw both the plain and the colon-containing name.
+        let reserved: Vec<String> = f
+            .cloud
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.url.path().starts_with("/api/sequences/"))
+            .map(|r| r.url.path().to_string())
+            .collect();
+        assert!(
+            reserved.contains(&"/api/sequences/barcode/reserve".to_string()),
+            "{reserved:?}"
+        );
+        assert!(
+            reserved
+                .iter()
+                .any(|p| p.contains("sku") && p.contains("PHO-SCR")),
+            "{reserved:?}"
+        );
     }
 
     #[tokio::test]
@@ -921,15 +1049,50 @@ mod tests {
         fn names(v: Vec<(&'static str, u64)>) -> Vec<&'static str> {
             v.into_iter().map(|(n, _)| n).collect()
         }
-        // Every cycle: invoice is >= 60% used; printJob/purchase are missing.
+        // Every cycle: invoice is >= 60% used; printJob/purchase/barcode are missing.
         assert_eq!(
             names(blocks_due(&have, BLOCK_NAMES, false)),
-            vec!["invoice", "printJob", "purchase"]
+            vec!["invoice", "printJob", "purchase", "barcode"]
         );
         // Periodic check also tops up creditNote (<= 50% left), not repair (90%).
         assert_eq!(
             names(blocks_due(&have, BLOCK_NAMES, true)),
-            vec!["invoice", "creditNote", "printJob", "purchase"]
+            vec!["invoice", "creditNote", "printJob", "purchase", "barcode"]
+        );
+    }
+
+    #[test]
+    fn sku_blocks_are_due_the_same_way_but_keyed_by_prefix() {
+        let have = vec![
+            BlockInfo {
+                name: "sku:PHO-SCR".into(),
+                remaining: 15,
+                block_size: 50,
+            },
+            BlockInfo {
+                name: "sku:ELE-CAB".into(),
+                remaining: 22,
+                block_size: 50,
+            },
+        ];
+        let prefixes = vec![
+            "PHO-SCR".to_string(),
+            "ELE-CAB".to_string(),
+            "TVX-BAT".to_string(),
+        ];
+        // PHO-SCR is >= 60% used; TVX-BAT was never reserved; ELE-CAB isn't due yet.
+        assert_eq!(
+            skus_due(&have, &prefixes, false),
+            vec!["PHO-SCR".to_string(), "TVX-BAT".to_string()]
+        );
+        // Periodic also tops up ELE-CAB (<= 50% left).
+        assert_eq!(
+            skus_due(&have, &prefixes, true),
+            vec![
+                "PHO-SCR".to_string(),
+                "ELE-CAB".to_string(),
+                "TVX-BAT".to_string()
+            ]
         );
     }
 }
