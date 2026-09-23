@@ -18,6 +18,9 @@ case "$TRIPLE" in *windows*) EXE=".exe" ;; esac
 
 mkdir -p "$BIN_DIR" "$RES_DIR"
 
+# Prevent macOS ld64 dyld "mis-aligned LINKEDIT string pool" bug on proc-macro dylibs
+export RUSTFLAGS="${RUSTFLAGS:-} -C strip=none"
+
 echo "==> building simplebash-backend ($TRIPLE)"
 cargo build --release --manifest-path "$ROOT/backend/Cargo.toml" --bin simplebash_pos_backend
 cp "$ROOT/backend/target/release/simplebash_pos_backend$EXE" \
