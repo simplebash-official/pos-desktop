@@ -29,11 +29,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout backend
+        uses: actions/checkout@v4
         with:
-          submodules: recursive
-          # Same read-only PAT desktop-build.yml uses to clone the private
-          # backend/document-server/frontend submodules.
+          repository: simplebash-official/pos-backend
           token: ${{ secrets.CI_SUBMODULE_TOKEN }}
+          path: backend
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: simplebash-official/pos-frontend
+          token: ${{ secrets.CI_SUBMODULE_TOKEN }}
+          path: frontend
+
+      - name: Checkout document-server
+        uses: actions/checkout@v4
+        with:
+          repository: simplebash-official/document-server
+          token: ${{ secrets.CI_SUBMODULE_TOKEN }}
+          path: document-server
 
       - name: Install Linux bundling dependencies
         # Same package list as desktop-build.yml's ubuntu-22.04 release job —

@@ -41,7 +41,7 @@ jobs:
   prepare:
     # Releases are cut only from the official repo; forks have none of the
     # signing/publishing secrets and must not try to push commits or tags.
-    if: github.repository == 'simplebash-official/pos-compose'
+    if: github.repository == 'simplebash-official/pos-desktop'
     runs-on: ubuntu-latest
     outputs:
       release: ${{ steps.compute.outputs.release }}
@@ -60,17 +60,6 @@ jobs:
       - name: Compute next version from conventional commits
         id: compute
         run: scripts/ci/next-version.sh
-
-      - name: Bump submodule pins to their tracked branches
-        if: steps.compute.outputs.release == 'true'
-        env:
-          SUBMODULE_TOKEN: ${{ secrets.CI_SUBMODULE_TOKEN }}
-        run: |
-          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
-          git submodule sync
-          git submodule update --init --remote --depth 1 -- frontend backend document-server
-          git config --global --unset url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf
-          git submodule status
 
       - name: Bump version (package.json is the single source of truth)
         if: steps.compute.outputs.release == 'true'

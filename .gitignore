@@ -41,3 +41,8 @@ src-tauri/graphify-out/
 
 # Cargo / Benchmark targets
 /target/
+
+# Sibling development symlinks / CI checkouts
+/backend
+/frontend
+/document-server
