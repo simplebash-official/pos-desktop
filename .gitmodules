@@ -1,0 +1,12 @@
+[submodule "backend"]
+	path = backend
+	url = ../pos-backend.git
+	branch = master
+[submodule "document-server"]
+	path = document-server
+	url = ../document-server.git
+	branch = main
+[submodule "frontend"]
+	path = frontend
+	url = ../pos-frontend.git
+	branch = main

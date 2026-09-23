@@ -4,8 +4,6 @@
   "private": true,
   "description": "Tauri desktop bundle of the SimpleBash POS frontend + backend + document-server",
   "scripts": {
-    "setup:links": "bash scripts/setup-links.sh",
-    "postinstall": "npm run setup:links",
     "tauri": "tauri",
     "sidecars": "bash scripts/build-sidecars.sh",
     "dev": "tauri dev",

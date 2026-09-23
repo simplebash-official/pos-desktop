@@ -61,6 +61,17 @@ jobs:
         id: compute
         run: scripts/ci/next-version.sh
 
+      - name: Bump submodule pins to their tracked branches
+        if: steps.compute.outputs.release == 'true'
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.CI_SUBMODULE_TOKEN }}
+        run: |
+          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          git submodule sync
+          git submodule update --init --remote --depth 1 -- frontend backend document-server
+          git config --global --unset url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf
+          git submodule status
+
       - name: Bump version (package.json is the single source of truth)
         if: steps.compute.outputs.release == 'true'
         run: python3 scripts/set-version.py "${{ steps.compute.outputs.version }}"
