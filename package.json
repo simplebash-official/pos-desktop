@@ -9,6 +9,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "build:desktop": "npm run sidecars && npm run build",
+    "build:cloud": "bash scripts/build-with-cloud.sh",
     "test:stress": "bash scripts/stress-test-desktop.sh",
     "env:desktop": "cp .env.desktop.example .env",
     "bench:logging": "bash scripts/bench-logging.sh"
