@@ -167,6 +167,13 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Baked in at compile time (`option_env!` in src-tauri/src/cloud/mod.rs).
+          # Repository *variables* (Settings → Secrets and variables → Actions →
+          # Variables), not literals: forks have none, so their builds stay
+          # cloud-disabled instead of pointing at our servers. An unset variable
+          # expands to "" which the shell treats as "no cloud URL".
+          CLOUD_API_URL: ${{ vars.CLOUD_API_URL }}
+          CLOUD_SYNC_API_URL: ${{ vars.CLOUD_SYNC_API_URL }}
 
       - uses: actions/upload-artifact@v4
         with:
