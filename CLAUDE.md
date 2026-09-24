@@ -4,19 +4,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-The **orchestrator / "pos-compose" repo** for **simplebash-pos**. It pulls three private repos in as git
+The **desktop shell repo** (`pos-desktop`) for **simplebash-pos**. It pulls three private repos in as git
 submodules — `backend` (repo `pos-backend`, Rust/Axum API, branch `master`), `document-server`
 (repo `document-server` — shared across future apps, not POS-specific, branch `main`), `frontend`
 (repo `pos-frontend`, React/Vite/Mantine PWA, branch `main`) — and adds a
 **Tauri 2.x desktop shell** (`src-tauri/`) that bundles all three as sidecar processes on loopback.
+Its own code is only `src-tauri/`, the release scripts/workflows and the docs.
 
-Two deployment targets:
-- **Web** — Docker Compose + MongoDB, deployed by each submodule's own `deploy.yml` on push to its
-  default branch. Nothing in this repo drives the web deploy.
-- **Desktop** — Tauri + SQLite. Built and released from this repo. See below.
+> Not to be confused with **`pos-compose`** — that is the *web deployment* repo, checked out as
+> `pos/deployment` (Docker Compose, nginx, `scripts/deploy.sh`). Nothing here deploys the web stack.
+
+Two deployment targets from the same backend/frontend code:
+- **Web** — Docker Compose + MongoDB (multi-tenant, shop-code login), built and rolled out from
+  `pos-compose` (`pos/deployment/scripts/deploy.sh`). While GitHub Actions credits are exhausted this is a
+  manual build → GHCR → SSH rollout; see that repo's README.
+- **Desktop** — Tauri + SQLite, one shop, works offline. Built and released from this repo. See below.
 
 Each submodule has its own directory-scoped `CLAUDE.md` (`backend/CLAUDE.md` etc.) that loads when
 working under that tree.
+
+## Repository layout (read before editing)
+
+The workspace has **two checkouts of the same backend/frontend/document-server repos**:
+
+| Path (under `pos/`) | What it is |
+|---|---|
+| `backend`, `frontend`, `document-server` | Your **working copies** — edit, test and commit app code here. The web deploy builds from these. |
+| `desktop` (this repo) | The `pos-desktop` repo: Tauri shell, release pipeline, docs. |
+| `desktop/backend`, `desktop/frontend`, `desktop/document-server` | **Submodule pins** of the same three repos, at whatever commit was last bumped. Read-only for day-to-day work. |
+| `deployment` | The `pos-compose` repo (web stack). |
+
+Rules that follow from this:
+
+- **Never make app changes inside `desktop/backend|frontend|document-server`.** Change the app in its own working copy (`pos/backend` …), commit, **push**, and only then move the pin here
+  (`git submodule update --remote <name>` + commit). A pin can only point at a commit that exists on GitHub.
+- **Local-only commits never reach an installer.** The release pipeline runs `git submodule update --remote`, i.e. it takes the tip of each remote branch. Push the app repos first.
+- **The pins go stale.** Before building or testing the desktop app by hand, run `git submodule update --remote` (then `git submodule status` to see what moved). Pure shell work in `src-tauri/`, `scripts/` or the docs does not need it.
+- The same code serves both targets; the desktop-only parts are gated with `isTauri()` on the frontend and `DATABASE_TYPE=sqlite` on the backend. Web-only parts (shop-code login, `TENANT_MODE=multi`, `/api/internal/provision`) never run inside the desktop app.
+
+### Cloud sign-up and device link
+
+The setup wizard's optional cloud step talks to the identity server (`cloud/identity-server`, auth.simplebash.com). It only appears when `CLOUD_API_URL` was set **at build time** — installers built without it (the current default) hide the step. Point release builds at `https://auth.simplebash.com` when that is wanted.
+Desktop sign-ups send only the shop (no `posOwner`), so identity does **not** create a web Admin; the desktop's local Admin arrives later through device sync. Verify how sync handles a tenant that already has an Admin (a shop first created on app.simplebash.com) before enabling device linking for such shops.
 
 ## Releases are automatic — commit messages drive them
 
