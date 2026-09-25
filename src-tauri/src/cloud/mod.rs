@@ -607,6 +607,7 @@ pub async fn cloud_register(
 
 #[tauri::command]
 pub async fn cloud_login_and_link(
+    app: AppHandle,
     state: State<'_, CloudState>,
     email: String,
     password: String,
@@ -616,7 +617,13 @@ pub async fn cloud_login_and_link(
         "cloud_login_and_link",
         json!({ "email": email, "tenantId": tenant_id }),
     );
-    call.finish(state.login_and_link(&email, &password, tenant_id).await)
+    let res = state.login_and_link(&email, &password, tenant_id).await;
+    if res.is_ok() {
+        if let Some(sync) = app.try_state::<crate::sync::SyncManager>() {
+            sync.wake();
+        }
+    }
+    call.finish(res)
 }
 
 #[tauri::command]
@@ -626,15 +633,31 @@ pub async fn cloud_link_start(state: State<'_, CloudState>) -> Result<PendingLin
 }
 
 #[tauri::command]
-pub async fn cloud_link_poll(state: State<'_, CloudState>) -> Result<LinkPollView, CloudError> {
+pub async fn cloud_link_poll(
+    app: AppHandle,
+    state: State<'_, CloudState>,
+) -> Result<LinkPollView, CloudError> {
     let call = CommandLog::start("cloud_link_poll", json!({}));
-    call.finish(state.link_poll().await)
+    let res = state.link_poll().await;
+    if let Ok(LinkPollView::Linked { .. }) = &res {
+        if let Some(sync) = app.try_state::<crate::sync::SyncManager>() {
+            sync.wake();
+        }
+    }
+    call.finish(res)
 }
 
 #[tauri::command]
-pub async fn cloud_unlink(state: State<'_, CloudState>) -> Result<CloudStateView, CloudError> {
+pub async fn cloud_unlink(
+    app: AppHandle,
+    state: State<'_, CloudState>,
+) -> Result<CloudStateView, CloudError> {
     let call = CommandLog::start("cloud_unlink", json!({}));
-    call.finish(state.unlink().await)
+    let res = state.unlink().await;
+    if let Some(sync) = app.try_state::<crate::sync::SyncManager>() {
+        sync.wake();
+    }
+    call.finish(res)
 }
 
 #[tauri::command]

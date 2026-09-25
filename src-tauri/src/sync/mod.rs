@@ -87,6 +87,10 @@ impl SyncManager {
         }
     }
 
+    pub fn wake(&self) {
+        self.ctl.wake_now();
+    }
+
     fn local_api(&self) -> LocalApi {
         let dir = self.data_dir.clone();
         let secret: SecretFn = Arc::new(move || read_jwt_secret(&dir));
@@ -211,7 +215,8 @@ async fn supervise(handle: AppHandle) {
             Ok(report) => {
                 backoff.reset();
                 failures = 0;
-                let busy = report.pushed >= PUSH_PAGE || report.pulled > 0 || report.pushed > 0;
+                let pending = ctl.snapshot().pending_out;
+                let busy = report.pushed >= PUSH_PAGE || report.pulled > 0 || report.pushed > 0 || pending > 0;
                 ctl.wait(if busy { BUSY_INTERVAL } else { IDLE_INTERVAL })
                     .await;
             }
@@ -227,10 +232,29 @@ async fn supervise(handle: AppHandle) {
                         ctl.pause();
                         continue;
                     }
-                    ErrorKind::Offline => ctl.update(|s| {
-                        s.state = SyncPhase::Offline;
-                        s.last_error = None;
-                    }),
+                    ErrorKind::Offline => {
+                        ctl.update(|s| {
+                            s.state = SyncPhase::Offline;
+                            s.last_error = None;
+                        });
+                        let jitter: f64 = rand::thread_rng().gen_range(-0.2..0.2);
+                        let delay = backoff.next_delay(jitter);
+                        let start = std::time::Instant::now();
+                        while start.elapsed() < delay {
+                            let remaining = delay.saturating_sub(start.elapsed());
+                            let tick = Duration::from_secs(3).min(remaining);
+                            let woken = ctl.wait(tick).await;
+                            if woken || agent.cloud.check_reachability().await {
+                                LogEvent::shell("sync", "internet.restored")
+                                    .level(Level::Info)
+                                    .emit();
+                                backoff.reset();
+                                failures = 0;
+                                break;
+                            }
+                        }
+                        continue;
+                    }
                     ErrorKind::Local if failures <= LOCAL_GRACE_ATTEMPTS => {}
                     _ => ctl.update(|s| {
                         s.state = SyncPhase::Error;

@@ -464,6 +464,26 @@ impl CloudSyncApi {
         self.typed(Method::GET, "/api/sync/status", &[], None).await
     }
 
+    /// Lightweight reachability check against the cloud sync endpoint.
+    /// Does not require authorization or a valid token; any response (even 4xx) proves
+    /// internet connectivity and route liveness to the cloud.
+    pub async fn check_reachability(&self) -> bool {
+        let url = format!("{}/api/sync/status", self.base);
+        match self
+            .http
+            .get(&url)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                resp.status().is_success() || (status >= 400 && status < 500)
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Idempotent per-device registration, done once per agent start.
     pub async fn register_device(
         &self,
