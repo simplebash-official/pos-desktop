@@ -212,7 +212,7 @@ impl Api<'_> {
             &json!({
                 "email": email,
                 "password": password,
-                "ownerName": owner_name,
+                "name": owner_name,
                 "storeName": store_name,
             }),
             None,

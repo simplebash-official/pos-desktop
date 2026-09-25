@@ -817,7 +817,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/accounts"))
             .and(body_partial_json(json!({
-                "email": "o@shop.lk", "password": "pw-123456", "ownerName": "Owner", "storeName": "Shop"
+                "email": "o@shop.lk", "password": "pw-123456", "name": "Owner", "storeName": "Shop"
             })))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "verificationRequired": true })))
             .expect(1)
