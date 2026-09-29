@@ -16,7 +16,7 @@ fn sensitive_key_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r"(?i)(password|passwd|pwd|secret|token|authorization|cookie|api[_-]?key|jwt|cvv|card_?number|otp|\bpin\b|^pin$|_pin$|pin_code|pincode|device[_-]?code|^payload$|^changes$|^records?$)",
+            r"(?i)(password|passwd|pwd|secret|token|authorization|cookie|api[_-]?key|jwt|cvv|card_?number|otp|proof|\bpin\b|^pin$|_pin$|pin_code|pincode|device[_-]?code|^payload$|^changes$|^records?$)",
         )
         .unwrap()
     })
@@ -86,6 +86,21 @@ mod tests {
         assert_eq!(v["accessToken"], REDACTED);
         assert_eq!(v["refreshToken"], REDACTED);
         assert_eq!(v["userCode"], "ABCD-EFGH");
+    }
+
+    #[test]
+    fn masks_the_phone_proof_and_otp_fields_but_not_the_masked_number() {
+        let mut v = json!({
+            "phoneProof": "ovp_abc",
+            "otpId": "otp_1",
+            "otpCode": "042817",
+            "phone": "***4567"
+        });
+        redact_value(&mut v);
+        assert_eq!(v["phoneProof"], REDACTED);
+        assert_eq!(v["otpId"], REDACTED);
+        assert_eq!(v["otpCode"], REDACTED);
+        assert_eq!(v["phone"], "***4567");
     }
 
     #[test]

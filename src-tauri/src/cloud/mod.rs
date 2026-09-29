@@ -22,7 +22,9 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::logging::{CommandLog, Level, LogEvent};
 pub use api::CloudError;
-use api::{Api, ApprovedLink, DeviceView, LinkStartResponse, PollResult};
+use api::{
+    Api, ApprovedLink, DeviceView, LinkStartResponse, OtpSendResult, OtpVerifyResult, PollResult,
+};
 use store::{CloudFile, KeyringStore, SecretStore, KEY_ACCESS, KEY_DEVICE, KEY_REFRESH};
 
 /// Compile-time default; `None` disables the feature for builds without it.
@@ -259,12 +261,36 @@ impl CloudState {
         Ok(B64.encode(SigningKey::from_bytes(&bytes).verifying_key().to_bytes()))
     }
 
+    /// Texts a one-time code to `phone`. Nothing is stored: the webview keeps the challenge id.
+    pub async fn otp_send(&self, phone: &str) -> Result<OtpSendResult, CloudError> {
+        let (base, _) = self.enabled()?;
+        Api {
+            http: &self.http,
+            base: &base,
+        }
+        .otp_send(phone)
+        .await
+    }
+
+    /// Trades the right code for the one-time proof of the phone number.
+    pub async fn otp_verify(&self, otp_id: &str, code: &str) -> Result<OtpVerifyResult, CloudError> {
+        let (base, _) = self.enabled()?;
+        Api {
+            http: &self.http,
+            base: &base,
+        }
+        .otp_verify(otp_id, code)
+        .await
+    }
+
     pub async fn register(
         &self,
         email: &str,
         password: &str,
         owner_name: &str,
         store_name: &str,
+        phone: &str,
+        phone_proof: &str,
     ) -> Result<RegisterResult, CloudError> {
         let (base, _) = self.enabled()?;
         let api = Api {
@@ -272,7 +298,7 @@ impl CloudState {
             base: &base,
         };
         let response = api
-            .register(email, password, owner_name, store_name)
+            .register(email, password, owner_name, store_name, phone, phone_proof)
             .await?;
         let verification_required = ["verificationRequired", "emailVerificationRequired"]
             .iter()
@@ -606,16 +632,49 @@ pub async fn cloud_register(
     password: String,
     owner_name: String,
     store_name: String,
+    phone: String,
+    phone_proof: String,
 ) -> Result<RegisterResult, CloudError> {
+    // The proof is a credential (redacted by key) and is never passed to the log; the number is
+    // personal data, so only its last digits are.
     let call = CommandLog::start(
         "cloud_register",
-        json!({ "email": email, "storeName": store_name }),
+        json!({ "email": email, "storeName": store_name, "phone": mask_phone(&phone) }),
     );
     call.finish(
         state
-            .register(&email, &password, &owner_name, &store_name)
+            .register(&email, &password, &owner_name, &store_name, &phone, &phone_proof)
             .await,
     )
+}
+
+/// `077 123 4567` -> `***4567`: enough to recognise a number in a log, not to reuse it.
+fn mask_phone(phone: &str) -> String {
+    let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() < 4 {
+        return "***".to_string();
+    }
+    format!("***{}", &digits[digits.len() - 4..])
+}
+
+#[tauri::command]
+pub async fn cloud_otp_send(
+    state: State<'_, CloudState>,
+    phone: String,
+) -> Result<OtpSendResult, CloudError> {
+    let call = CommandLog::start("cloud_otp_send", json!({ "phone": mask_phone(&phone) }));
+    call.finish(state.otp_send(&phone).await)
+}
+
+#[tauri::command]
+pub async fn cloud_otp_verify(
+    state: State<'_, CloudState>,
+    otp_id: String,
+    code: String,
+) -> Result<OtpVerifyResult, CloudError> {
+    // Neither the code nor the proof it returns goes to the log.
+    let call = CommandLog::start("cloud_otp_verify", json!({}));
+    call.finish(state.otp_verify(&otp_id, &code).await)
 }
 
 #[tauri::command]
@@ -798,7 +857,7 @@ mod tests {
         assert!(!f.state.view().enabled);
         let err = f
             .state
-            .register("a@b.c", "pw", "Owner", "Shop")
+            .register("a@b.c", "pw", "Owner", "Shop", "94771234567", "ovp_proof")
             .await
             .unwrap_err();
         assert_eq!(err.code, "CLOUD_DISABLED");
@@ -830,7 +889,8 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/accounts"))
             .and(body_partial_json(json!({
-                "email": "o@shop.lk", "password": "pw-123456", "name": "Owner", "storeName": "Shop"
+                "email": "o@shop.lk", "password": "pw-123456", "name": "Owner", "storeName": "Shop",
+                "phone": "94771234567", "phoneProof": "ovp_proof"
             })))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "verificationRequired": true })))
             .expect(1)
@@ -839,10 +899,97 @@ mod tests {
         let f = fixture(Some(server.uri()));
         let out = f
             .state
-            .register("o@shop.lk", "pw-123456", "Owner", "Shop")
+            .register("o@shop.lk", "pw-123456", "Owner", "Shop", "94771234567", "ovp_proof")
             .await
             .unwrap();
         assert!(out.verification_required);
+    }
+
+    #[tokio::test]
+    async fn otp_send_posts_the_phone_for_signup_and_returns_the_challenge() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/otp/send"))
+            .and(body_partial_json(json!({ "phone": "0771234567", "purpose": "signup" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "otpId": "otp_abc", "expiresIn": 300, "resendAfter": 60, "deliveryUncertain": true
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let f = fixture(Some(server.uri()));
+        let out = f.state.otp_send("0771234567").await.unwrap();
+        assert_eq!(
+            (out.otp_id.as_str(), out.expires_in, out.resend_after, out.delivery_uncertain),
+            ("otp_abc", 300, 60, true)
+        );
+    }
+
+    #[tokio::test]
+    async fn otp_send_defaults_delivery_uncertain_to_false() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/otp/send"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "otpId": "otp_abc", "expiresIn": 300, "resendAfter": 60
+            })))
+            .mount(&server)
+            .await;
+        let f = fixture(Some(server.uri()));
+        assert!(!f.state.otp_send("0771234567").await.unwrap().delivery_uncertain);
+    }
+
+    #[tokio::test]
+    async fn otp_verify_posts_the_code_and_returns_the_proof() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/otp/verify"))
+            .and(body_partial_json(json!({ "otpId": "otp_abc", "code": "042817" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "phoneProof": "ovp_proof", "expiresIn": 600
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let f = fixture(Some(server.uri()));
+        let out = f.state.otp_verify("otp_abc", "042817").await.unwrap();
+        assert_eq!((out.phone_proof.as_str(), out.expires_in), ("ovp_proof", 600));
+    }
+
+    #[tokio::test]
+    async fn otp_errors_keep_the_identity_code_for_the_ui() {
+        let server = MockServer::start().await;
+        for (route, status, code) in [
+            ("/v1/otp/verify", 400, "OTP_INVALID"),
+            ("/v1/otp/send", 400, "PHONE_COUNTRY_UNSUPPORTED"),
+        ] {
+            Mock::given(method("POST"))
+                .and(path(route))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({
+                    "success": false, "message": "x", "code": code, "statusCode": status
+                })))
+                .mount(&server)
+                .await;
+        }
+        let f = fixture(Some(server.uri()));
+        let err = f.state.otp_verify("otp_abc", "000000").await.unwrap_err();
+        assert_eq!((err.code.as_str(), err.status), ("OTP_INVALID", 400));
+        let err = f.state.otp_send("+1 415 555 0100").await.unwrap_err();
+        assert_eq!((err.code.as_str(), err.status), ("PHONE_COUNTRY_UNSUPPORTED", 400));
+    }
+
+    #[test]
+    fn logged_phone_numbers_keep_only_the_last_four_digits() {
+        assert_eq!(mask_phone("077 123 4567"), "***4567");
+        assert_eq!(mask_phone("+94 77 123 4567"), "***4567");
+        assert_eq!(mask_phone("12"), "***");
+    }
+
+    #[tokio::test]
+    async fn otp_calls_are_refused_when_cloud_is_off() {
+        let f = fixture(None);
+        assert_eq!(f.state.otp_send("0771234567").await.unwrap_err().code, "CLOUD_DISABLED");
+        assert_eq!(f.state.otp_verify("otp", "123456").await.unwrap_err().code, "CLOUD_DISABLED");
     }
 
     #[tokio::test]
@@ -858,7 +1005,7 @@ mod tests {
         let f = fixture(Some(server.uri()));
         let err = f
             .state
-            .register("o@shop.lk", "pw", "O", "S")
+            .register("o@shop.lk", "pw", "O", "S", "94771234567", "ovp_proof")
             .await
             .unwrap_err();
         assert_eq!((err.code.as_str(), err.status), ("EMAIL_TAKEN", 409));

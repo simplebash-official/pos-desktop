@@ -144,6 +144,27 @@ struct DevicesListResponse {
     devices: Vec<DeviceView>,
 }
 
+/// What `POST /v1/otp/send` answers. Sent on to the webview as-is (no secret in it).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OtpSendResult {
+    pub otp_id: String,
+    /// Seconds the code stays valid.
+    pub expires_in: i64,
+    /// Seconds before another code may be requested for this number.
+    pub resend_after: i64,
+    /// True when the text provider gave no clear answer: the code may still arrive.
+    pub delivery_uncertain: bool,
+}
+
+/// What `POST /v1/otp/verify` answers: the one-time proof that `register` spends.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OtpVerifyResult {
+    pub phone_proof: String,
+    pub expires_in: i64,
+}
+
 pub struct Api<'a> {
     pub http: &'a reqwest::Client,
     pub base: &'a str,
@@ -205,12 +226,16 @@ impl Api<'_> {
         read_json(req.send().await.map_err(CloudError::network)?).await
     }
 
+    /// `phone` and `phone_proof` come from `otp_send` + `otp_verify`: identity only creates an account
+    /// for a phone number that was proven with a one-time code.
     pub async fn register(
         &self,
         email: &str,
         password: &str,
         owner_name: &str,
         store_name: &str,
+        phone: &str,
+        phone_proof: &str,
     ) -> Result<Value, CloudError> {
         self.post_json(
             "/v1/accounts",
@@ -219,7 +244,29 @@ impl Api<'_> {
                 "password": password,
                 "name": owner_name,
                 "storeName": store_name,
+                "phone": phone,
+                "phoneProof": phone_proof,
             }),
+            None,
+        )
+        .await
+    }
+
+    /// Texts a 6-digit code to `phone` (a Sri Lankan mobile, any usual way of writing it).
+    pub async fn otp_send(&self, phone: &str) -> Result<OtpSendResult, CloudError> {
+        self.post_json(
+            "/v1/otp/send",
+            &json!({ "phone": phone, "purpose": "signup" }),
+            None,
+        )
+        .await
+    }
+
+    /// Trades the right code for a one-time proof of the phone number.
+    pub async fn otp_verify(&self, otp_id: &str, code: &str) -> Result<OtpVerifyResult, CloudError> {
+        self.post_json(
+            "/v1/otp/verify",
+            &json!({ "otpId": otp_id, "code": code }),
             None,
         )
         .await

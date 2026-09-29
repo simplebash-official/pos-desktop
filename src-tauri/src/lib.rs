@@ -215,6 +215,8 @@ pub fn run() {
             printer::print_pdf_native,
             cloud::cloud_get_state,
             cloud::cloud_register,
+            cloud::cloud_otp_send,
+            cloud::cloud_otp_verify,
             cloud::cloud_login_and_link,
             cloud::cloud_link_start,
             cloud::cloud_link_poll,
