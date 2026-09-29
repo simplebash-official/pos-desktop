@@ -45,6 +45,7 @@ struct PendingLink {
     interval: u64,
     expires_in: u64,
     account_email: Option<String>,
+    account_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -63,6 +64,7 @@ pub struct CloudStateView {
     pub enabled: bool,
     pub linked: bool,
     pub account_email: Option<String>,
+    pub account_name: Option<String>,
     pub tenant_id: Option<String>,
     pub shop_code: Option<String>,
     pub device_id: Option<String>,
@@ -175,6 +177,7 @@ impl CloudState {
             linked: file.is_linked(),
             telemetry_enabled: file.telemetry_enabled.unwrap_or(true),
             account_email: file.account_email,
+            account_name: file.account_name,
             tenant_id: file.tenant_id,
             shop_code: file.shop_code,
             device_id: file.device_id,
@@ -287,6 +290,7 @@ impl CloudState {
         tenant_id: Option<&str>,
         bearer: Option<&str>,
         account_email: Option<String>,
+        account_name: Option<String>,
     ) -> Result<LinkStartResponse, CloudError> {
         let installation_id = self
             .installation_id()
@@ -310,6 +314,7 @@ impl CloudState {
             interval: start.interval,
             expires_in: start.expires_in,
             account_email,
+            account_name,
         });
         Ok(start)
     }
@@ -318,13 +323,16 @@ impl CloudState {
         &self,
         approved: ApprovedLink,
         account_email: Option<String>,
+        account_name: Option<String>,
     ) -> Result<(), CloudError> {
         self.store_tokens(&approved.access_token, &approved.refresh_token)?;
         let mut file = CloudFile::load(&self.dir);
         file.device_id = Some(approved.device_id);
         file.tenant_id = Some(approved.tenant_id);
         file.shop_code = Some(approved.shop_code).filter(|s| !s.is_empty());
-        file.account_email = account_email;
+        // The identity server names the approver; prefer that over what we knew.
+        file.account_email = approved.account_email.clone().or(account_email);
+        file.account_name = approved.account_name.clone().or(account_name);
         file.linked_at = Some(chrono::Utc::now().to_rfc3339());
         file.save(&self.dir)
             .map_err(|e| CloudError::new("STATE_WRITE_FAILED", e, 0))?;
@@ -366,12 +374,13 @@ impl CloudState {
                 Some(&tenant.tenant_id),
                 Some(&login.access_token),
                 account_email.clone(),
+                login.account.name.clone(),
             )
             .await?;
         for _ in 0..3 {
             match api.link_poll(&start.device_code).await? {
                 PollResult::Approved(approved) => {
-                    self.finalize_link(approved, account_email)?;
+                    self.finalize_link(approved, account_email, login.account.name.clone())?;
                     return Ok(self.view());
                 }
                 PollResult::Pending => {
@@ -389,7 +398,7 @@ impl CloudState {
             http: &self.http,
             base: &base,
         };
-        let start = self.begin_link(&api, None, None, None).await?;
+        let start = self.begin_link(&api, None, None, None, None).await?;
         Ok(PendingLinkView {
             user_code: start.user_code,
             verification_url: start.verification_url,
@@ -400,12 +409,16 @@ impl CloudState {
 
     pub async fn link_poll(&self) -> Result<LinkPollView, CloudError> {
         let (base, _) = self.enabled()?;
-        let (device_code, account_email) = {
+        let (device_code, account_email, account_name) = {
             let pending = self.pending.lock().unwrap();
             let p = pending
                 .as_ref()
                 .ok_or_else(|| CloudError::new("NO_PENDING_LINK", "no link in progress", 0))?;
-            (p.device_code.clone(), p.account_email.clone())
+            (
+                p.device_code.clone(),
+                p.account_email.clone(),
+                p.account_name.clone(),
+            )
         };
         let api = Api {
             http: &self.http,
@@ -414,7 +427,7 @@ impl CloudState {
         match api.link_poll(&device_code).await? {
             PollResult::Pending => Ok(LinkPollView::Pending),
             PollResult::Approved(approved) => {
-                self.finalize_link(approved, account_email)?;
+                self.finalize_link(approved, account_email, account_name)?;
                 Ok(LinkPollView::Linked { state: self.view() })
             }
         }

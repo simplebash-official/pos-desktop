@@ -72,6 +72,11 @@ pub struct ApprovedLink {
     pub tenant_id: String,
     #[serde(default)]
     pub shop_code: String,
+    /// Who approved the link; absent from older identity servers.
+    #[serde(default)]
+    pub account_email: Option<String>,
+    #[serde(default)]
+    pub account_name: Option<String>,
     pub access_token: String,
     pub refresh_token: String,
 }

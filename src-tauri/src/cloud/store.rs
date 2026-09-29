@@ -122,6 +122,7 @@ pub struct CloudFile {
     pub tenant_id: Option<String>,
     pub shop_code: Option<String>,
     pub account_email: Option<String>,
+    pub account_name: Option<String>,
     pub linked_at: Option<String>,
     /// `None` = never chosen: telemetry defaults to on (only when cloud is enabled).
     pub telemetry_enabled: Option<bool>,
