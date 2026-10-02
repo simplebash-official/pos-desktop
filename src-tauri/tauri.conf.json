@@ -41,7 +41,7 @@
     "targets": ["app", "dmg", "nsis", "appimage"],
     "createUpdaterArtifacts": true,
     "category": "Business",
-    "shortDescription": "Point of sale for SimpleBash Service Center",
+    "shortDescription": "Point of sale for SimpleBash POS",
     "longDescription": "Offline-first point-of-sale desktop app for SimpleBash — billing, repairs, print jobs, inventory, customers and reports, with the API and document renderer bundled as local services.",
     "icon": [
       "icons/32x32.png",
