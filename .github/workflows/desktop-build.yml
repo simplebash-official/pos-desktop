@@ -2,9 +2,7 @@ name: desktop-build
 
 # Builds the Tauri desktop bundle for Linux + Windows + macOS and, when asked to,
 # publishes a GitHub Release + the Tauri updater manifest (`latest.json`) on this
-# repo (`simplebash-official/pos-desktop`). While installs from before v0.8 still
-# poll the old `simplebash-official/releases` feed, the same release is mirrored
-# there too when `RELEASES_REPO_TOKEN` is set (remove the secret to stop).
+# repo (`simplebash-official/pos-desktop`) — the only release feed.
 #
 # Three ways in:
 #   workflow_call   — `.github/workflows/release.yml` calls this after it has
@@ -19,8 +17,6 @@ name: desktop-build
 #   TAURI_SIGNING_PRIVATE_KEY           minisign private key (from `tauri signer generate`) — required
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password — required; generate the key WITH one
 #   CI_SUBMODULE_TOKEN                  optional: only while a submodule repo is still private
-#   RELEASES_REPO_TOKEN                 optional: PAT, Contents:write on simplebash-official/releases,
-#                                       for the transition mirror described above
 #
 # Supply-chain note: the signing key can push an update to every installed POS,
 # so it is only present in the one step that needs it (`tauri build`). The
@@ -307,31 +303,5 @@ jobs:
               --title "SimpleBash POS ${TAG}" \
               --notes-file NOTES.md \
               --verify-tag \
-              "${assets[@]}"
-          fi
-
-      # Transition: installs older than v0.8 only know the old feed
-      # (simplebash-official/releases). Mirroring the same assets + latest.json
-      # there lets them update to a build that reads this repo's feed. Its
-      # latest.json already points at this repo's download URLs. Drop the
-      # RELEASES_REPO_TOKEN secret once old installs have moved on.
-      - name: Mirror release to legacy simplebash-official/releases feed
-        env:
-          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
-          ASSET_LIST: ${{ steps.manifest.outputs.files }}
-        shell: bash
-        run: |
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "RELEASES_REPO_TOKEN not set; skipping the legacy mirror."
-            exit 0
-          fi
-          mapfile -t assets < <(printf '%s\n' "$ASSET_LIST" | sed '/^$/d')
-          if gh release view "${TAG}" --repo simplebash-official/releases >/dev/null 2>&1; then
-            gh release upload "${TAG}" --repo simplebash-official/releases --clobber "${assets[@]}"
-          else
-            gh release create "${TAG}" \
-              --repo simplebash-official/releases \
-              --title "SimpleBash POS ${TAG}" \
-              --notes-file NOTES.md \
               "${assets[@]}"
           fi

@@ -38,8 +38,7 @@ the next desktop release automatically.
      3. bumps `package.json`,
      4. commits `chore(release): vX.Y.Z [skip ci]` + tags `vX.Y.Z` on `main`,
      5. builds macOS + Linux + Windows and publishes the GitHub Release + `latest.json` on
-        this repo (mirrored to the legacy `simplebash-official/releases` feed during the
-        transition — see `.github/RELEASING.md`).
+        this repo.
 
 That's it. No script, no manual tag.
 
@@ -112,4 +111,4 @@ git push && git push origin v0.2.2         # the tag push starts the build + pub
   More info → Run anyway. In-app updates after that are clean. See `.github/RELEASING.md`.
 - **`workflow_dispatch`** (Actions → desktop-build → Run workflow) builds all 3 platforms;
   it publishes only if you tick `publish`. Use it to check a build.
-- One-time CI setup (secrets, branch protection, the legacy feed) lives in `.github/RELEASING.md`.
+- One-time CI setup (secrets, branch protection) lives in `.github/RELEASING.md`.

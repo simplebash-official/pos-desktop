@@ -12,8 +12,7 @@ bump; `docs`/`chore`/`ci`/`refactor`/`test`/`build`/`style` → nothing) it:
    (pushed with the default `GITHUB_TOKEN`),
 5. calls `.github/workflows/desktop-build.yml` (a reusable workflow) to build
    every OS and publish the GitHub Release + `latest.json` on this repo
-   (`simplebash-official/pos-desktop`), mirrored to the legacy
-   `simplebash-official/releases` feed while `RELEASES_REPO_TOKEN` is set.
+   (`simplebash-official/pos-desktop`).
 
 `desktop-build.yml` has three entry points:
 
@@ -72,16 +71,13 @@ on every till. On all four repos:
 ### 1. Where releases are published
 
 Releases (installers + the signed `latest.json` updater manifest) are published
-on **this** repo. The app checks
-`https://github.com/simplebash-official/pos-desktop/releases/latest/download/latest.json`
-first and falls back to the old feed.
+on **this** repo, and the app checks
+`https://github.com/simplebash-official/pos-desktop/releases/latest/download/latest.json`.
 
-Installs from **before v0.8** only know the old public feed,
-`simplebash-official/releases`. Keep that repo (do not delete or rename it) and
-keep `RELEASES_REPO_TOKEN` set until those installs have updated: every release
-is mirrored there, and its `latest.json` points at this repo's downloads, so an
-old install updates to a build that reads the new feed. After that, remove the
-secret and archive the old repo.
+> **Keep `simplebash-official/releases`.** Installs older than v0.8 only know that
+> old feed. Its v0.8.0 release (the last one published there) is what moves them
+> onto this repo's feed, so don't delete it or the repo. It is archived
+> (read-only) and receives no new releases.
 
 ### 2. Generate the updater signing key
 
@@ -112,7 +108,6 @@ npx --prefix . tauri signer generate --ci --password "" \
 |---|---|
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.simplebash-updater/simplebash-updater.key` |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the key's password (see the note in step 2) |
-| `RELEASES_REPO_TOKEN` | *transition only* — fine-grained PAT, **Contents: Read and write** on `simplebash-official/releases` (see step 1) |
 | `CI_SUBMODULE_TOKEN` | *only while a submodule repo is private* — fine-grained PAT, **Contents: Read-only** on `pos-backend`, `document-server`, `pos-frontend`. Public submodules are cloned with the built-in token. |
 
 Publishing on this repo uses the workflow's own `GITHUB_TOKEN`; no PAT is needed for it.
@@ -121,7 +116,6 @@ Publishing on this repo uses the workflow's own `GITHUB_TOKEN`; no PAT is needed
 gh secret set TAURI_SIGNING_PRIVATE_KEY --repo simplebash-official/pos-desktop \
   < ~/.simplebash-updater/simplebash-updater.key
 gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo simplebash-official/pos-desktop --body "<key password>"
-gh secret set RELEASES_REPO_TOKEN --repo simplebash-official/pos-desktop --body "<paste PAT>"
 ```
 
 ## Cutting a release
