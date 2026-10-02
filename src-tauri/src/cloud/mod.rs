@@ -86,7 +86,9 @@ pub struct RegisterResult {
 #[serde(rename_all = "camelCase", tag = "status")]
 pub enum LinkPollView {
     Pending,
-    Linked { state: CloudStateView },
+    // Boxed: the view is ~200 bytes and `Pending` carries nothing. Serde
+    // serializes a `Box` exactly like its contents, so the JSON is unchanged.
+    Linked { state: Box<CloudStateView> },
 }
 
 pub struct CloudState {
@@ -273,7 +275,11 @@ impl CloudState {
     }
 
     /// Trades the right code for the one-time proof of the phone number.
-    pub async fn otp_verify(&self, otp_id: &str, code: &str) -> Result<OtpVerifyResult, CloudError> {
+    pub async fn otp_verify(
+        &self,
+        otp_id: &str,
+        code: &str,
+    ) -> Result<OtpVerifyResult, CloudError> {
         let (base, _) = self.enabled()?;
         Api {
             http: &self.http,
@@ -454,7 +460,9 @@ impl CloudState {
             PollResult::Pending => Ok(LinkPollView::Pending),
             PollResult::Approved(approved) => {
                 self.finalize_link(approved, account_email, account_name)?;
-                Ok(LinkPollView::Linked { state: self.view() })
+                Ok(LinkPollView::Linked {
+                    state: Box::new(self.view()),
+                })
             }
         }
     }
@@ -643,7 +651,14 @@ pub async fn cloud_register(
     );
     call.finish(
         state
-            .register(&email, &password, &owner_name, &store_name, &phone, &phone_proof)
+            .register(
+                &email,
+                &password,
+                &owner_name,
+                &store_name,
+                &phone,
+                &phone_proof,
+            )
             .await,
     )
 }
@@ -892,14 +907,23 @@ mod tests {
                 "email": "o@shop.lk", "password": "pw-123456", "name": "Owner", "storeName": "Shop",
                 "phone": "94771234567", "phoneProof": "ovp_proof"
             })))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "verificationRequired": true })))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(json!({ "verificationRequired": true })),
+            )
             .expect(1)
             .mount(&server)
             .await;
         let f = fixture(Some(server.uri()));
         let out = f
             .state
-            .register("o@shop.lk", "pw-123456", "Owner", "Shop", "94771234567", "ovp_proof")
+            .register(
+                "o@shop.lk",
+                "pw-123456",
+                "Owner",
+                "Shop",
+                "94771234567",
+                "ovp_proof",
+            )
             .await
             .unwrap();
         assert!(out.verification_required);
@@ -910,7 +934,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/otp/send"))
-            .and(body_partial_json(json!({ "phone": "0771234567", "purpose": "signup" })))
+            .and(body_partial_json(
+                json!({ "phone": "0771234567", "purpose": "signup" }),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "otpId": "otp_abc", "expiresIn": 300, "resendAfter": 60, "deliveryUncertain": true
             })))
@@ -920,7 +946,12 @@ mod tests {
         let f = fixture(Some(server.uri()));
         let out = f.state.otp_send("0771234567").await.unwrap();
         assert_eq!(
-            (out.otp_id.as_str(), out.expires_in, out.resend_after, out.delivery_uncertain),
+            (
+                out.otp_id.as_str(),
+                out.expires_in,
+                out.resend_after,
+                out.delivery_uncertain
+            ),
             ("otp_abc", 300, 60, true)
         );
     }
@@ -936,7 +967,13 @@ mod tests {
             .mount(&server)
             .await;
         let f = fixture(Some(server.uri()));
-        assert!(!f.state.otp_send("0771234567").await.unwrap().delivery_uncertain);
+        assert!(
+            !f.state
+                .otp_send("0771234567")
+                .await
+                .unwrap()
+                .delivery_uncertain
+        );
     }
 
     #[tokio::test]
@@ -944,7 +981,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/otp/verify"))
-            .and(body_partial_json(json!({ "otpId": "otp_abc", "code": "042817" })))
+            .and(body_partial_json(
+                json!({ "otpId": "otp_abc", "code": "042817" }),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "phoneProof": "ovp_proof", "expiresIn": 600
             })))
@@ -953,7 +992,10 @@ mod tests {
             .await;
         let f = fixture(Some(server.uri()));
         let out = f.state.otp_verify("otp_abc", "042817").await.unwrap();
-        assert_eq!((out.phone_proof.as_str(), out.expires_in), ("ovp_proof", 600));
+        assert_eq!(
+            (out.phone_proof.as_str(), out.expires_in),
+            ("ovp_proof", 600)
+        );
     }
 
     #[tokio::test]
@@ -975,7 +1017,10 @@ mod tests {
         let err = f.state.otp_verify("otp_abc", "000000").await.unwrap_err();
         assert_eq!((err.code.as_str(), err.status), ("OTP_INVALID", 400));
         let err = f.state.otp_send("+1 415 555 0100").await.unwrap_err();
-        assert_eq!((err.code.as_str(), err.status), ("PHONE_COUNTRY_UNSUPPORTED", 400));
+        assert_eq!(
+            (err.code.as_str(), err.status),
+            ("PHONE_COUNTRY_UNSUPPORTED", 400)
+        );
     }
 
     #[test]
@@ -988,8 +1033,14 @@ mod tests {
     #[tokio::test]
     async fn otp_calls_are_refused_when_cloud_is_off() {
         let f = fixture(None);
-        assert_eq!(f.state.otp_send("0771234567").await.unwrap_err().code, "CLOUD_DISABLED");
-        assert_eq!(f.state.otp_verify("otp", "123456").await.unwrap_err().code, "CLOUD_DISABLED");
+        assert_eq!(
+            f.state.otp_send("0771234567").await.unwrap_err().code,
+            "CLOUD_DISABLED"
+        );
+        assert_eq!(
+            f.state.otp_verify("otp", "123456").await.unwrap_err().code,
+            "CLOUD_DISABLED"
+        );
     }
 
     #[tokio::test]

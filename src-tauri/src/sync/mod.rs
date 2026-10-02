@@ -216,7 +216,10 @@ async fn supervise(handle: AppHandle) {
                 backoff.reset();
                 failures = 0;
                 let pending = ctl.snapshot().pending_out;
-                let busy = report.pushed >= PUSH_PAGE || report.pulled > 0 || report.pushed > 0 || pending > 0;
+                let busy = report.pushed >= PUSH_PAGE
+                    || report.pulled > 0
+                    || report.pushed > 0
+                    || pending > 0;
                 ctl.wait(if busy { BUSY_INTERVAL } else { IDLE_INTERVAL })
                     .await;
             }

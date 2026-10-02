@@ -123,7 +123,9 @@ impl SyncControl {
 
     /// Sleeps for `duration` or until `wake_now` / `resume`. Returns true if woken.
     pub async fn wait(&self, duration: Duration) -> bool {
-        tokio::time::timeout(duration, self.wake.notified()).await.is_ok()
+        tokio::time::timeout(duration, self.wake.notified())
+            .await
+            .is_ok()
     }
 
     /// Marks the need for a user-confirmed bootstrap, pauses, and tells the UI

@@ -478,7 +478,7 @@ impl CloudSyncApi {
         {
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                resp.status().is_success() || (status >= 400 && status < 500)
+                resp.status().is_success() || (400..500).contains(&status)
             }
             Err(_) => false,
         }

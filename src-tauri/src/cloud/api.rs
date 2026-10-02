@@ -263,7 +263,11 @@ impl Api<'_> {
     }
 
     /// Trades the right code for a one-time proof of the phone number.
-    pub async fn otp_verify(&self, otp_id: &str, code: &str) -> Result<OtpVerifyResult, CloudError> {
+    pub async fn otp_verify(
+        &self,
+        otp_id: &str,
+        code: &str,
+    ) -> Result<OtpVerifyResult, CloudError> {
         self.post_json(
             "/v1/otp/verify",
             &json!({ "otpId": otp_id, "code": code }),
