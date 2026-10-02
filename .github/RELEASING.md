@@ -11,8 +11,9 @@ bump; `docs`/`chore`/`ci`/`refactor`/`test`/`build`/`style` → nothing) it:
 4. commits `chore(release): vX.Y.Z [skip ci]` and tags `vX.Y.Z` on `main`
    (pushed with the default `GITHUB_TOKEN`),
 5. calls `.github/workflows/desktop-build.yml` (a reusable workflow) to build
-   every OS and publish the GitHub Release + `latest.json` to
-   `simplebash-official/releases`.
+   every OS and publish the GitHub Release + `latest.json` on this repo
+   (`simplebash-official/pos-desktop`), mirrored to the legacy
+   `simplebash-official/releases` feed while `RELEASES_REPO_TOKEN` is set.
 
 `desktop-build.yml` has three entry points:
 
@@ -48,40 +49,39 @@ Authenticode cert, wired into `desktop-build.yml`.
 
 ## One-time setup
 
-### 0. Branch protection — only if you have any
+### 0. Branch protection — required (the repos are public)
 
-`release.yml` pushes the release commit + tag straight to `main`. This works
-out of the box on a **Free** org plan with a **private** repo — rulesets aren't
-enforced there and classic branch protection doesn't apply, so there is nothing
-to do.
+Step 2 of every release takes the **tip** of `pos-backend` `master`,
+`pos-frontend` `main` and `document-server` `main`, and the result is signed and
+pushed to every installed POS. So whatever can land on those branches can land
+on every till. On all four repos:
 
-You only need to act if **both**: (a) the org is on **GitHub Team/Enterprise**
-or the repo is **public**, *and* (b) `main` has a ruleset or classic protection
-that restricts pushes / requires a PR / requires linear history. Then the CI
-push fails with `GH006: Protected branch update failed`, and you fix it with:
-
-> **Settings → Rules →** the `main` ruleset **→ Bypass list → Add bypass →** add
-> the **`GitHub Actions`** actor (`github-actions[bot]`), mode "Always allow".
-> Keep "Require a pull request before merging" for humans — the bypass only
-> exempts the Actions bot. Add the same bypass to a `v*` **tag** ruleset if one
-> exists.
+> **Settings → Rules → New branch ruleset** targeting the default branch:
+> require a pull request with at least one approving review, block force
+> pushes and deletions. On `pos-desktop`, add the **`GitHub Actions`** actor
+> (`github-actions[bot]`) to the ruleset's **Bypass list** ("Always allow") so
+> `release.yml` can still push the `chore(release)` commit and the tag; humans
+> keep going through PRs. Add the same bypass to a `v*` **tag** ruleset if you
+> create one.
 >
 > Can't grant a bot bypass? Change the "Commit + tag on main" step in
 > `release.yml` to push only the tag (`git push origin "$TAG"`), not `HEAD:main`.
 > The tag still carries the bumped `package.json` + submodule pins; `main` just
 > lags by the `chore(release)` commit, and `next-version.sh` works off tags.
 
-### 1. Create the public releases repo
+### 1. Where releases are published
 
-The Tauri updater fetches `latest.json` and the installers over plain HTTPS, so
-they must live in a **public** repo (the source repos stay private):
+Releases (installers + the signed `latest.json` updater manifest) are published
+on **this** repo. The app checks
+`https://github.com/simplebash-official/pos-desktop/releases/latest/download/latest.json`
+first and falls back to the old feed.
 
-```bash
-gh repo create simplebash-official/releases --public \
-  --description "Auto-published desktop releases for SimpleBash POS. Do not commit here by hand."
-```
-
-Add a short `README.md` there explaining it is auto-published.
+Installs from **before v0.8** only know the old public feed,
+`simplebash-official/releases`. Keep that repo (do not delete or rename it) and
+keep `RELEASES_REPO_TOKEN` set until those installs have updated: every release
+is mirrored there, and its `latest.json` points at this repo's downloads, so an
+old install updates to a build that reads the new feed. After that, remove the
+secret and archive the old repo.
 
 ### 2. Generate the updater signing key
 
@@ -98,26 +98,30 @@ npx --prefix . tauri signer generate --ci --password "" \
 > A key was generated during initial setup; its public half is committed. Only
 > regenerate if the private key is lost or compromised (then every already-
 > installed client must get one manual update to the new-pubkey build).
+>
+> **That key has no password.** Anyone who obtains it can sign an update that
+> every install accepts, so with the source public it is worth protecting: the
+> build workflow only exposes it to the final `tauri build` step, but a
+> password means a leaked secret value alone is not enough. Generate keys with
+> `--password "<strong password>"` from now on; adding one to the current key
+> means a new key pair, i.e. the one-time manual update described above.
 
-### 3. Add repo secrets (this repo — `simplebash-official/pos-compose`)
+### 3. Add repo secrets (this repo — `simplebash-official/pos-desktop`)
 
 | Secret | Value |
 |---|---|
-| `CI_SUBMODULE_TOKEN` | fine-grained PAT, **Contents: Read-only** on `pos-backend`, `document-server`, `pos-frontend`, `pos-compose` (the workflow's own `GITHUB_TOKEN` can't read the sibling private repos, so `actions/checkout` needs this for the submodule clones) |
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.simplebash-updater/simplebash-updater.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | empty string (key was generated with no password) |
-| `RELEASES_REPO_TOKEN` | fine-grained PAT, **Contents: Read and write** on `simplebash-official/releases` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the key's password (see the note in step 2) |
+| `RELEASES_REPO_TOKEN` | *transition only* — fine-grained PAT, **Contents: Read and write** on `simplebash-official/releases` (see step 1) |
+| `CI_SUBMODULE_TOKEN` | *only while a submodule repo is private* — fine-grained PAT, **Contents: Read-only** on `pos-backend`, `document-server`, `pos-frontend`. Public submodules are cloned with the built-in token. |
 
-`CI_SUBMODULE_TOKEN` and `RELEASES_REPO_TOKEN` can be the **same** fine-grained PAT if
-you give it Contents: Read+Write on all five repos — least-privilege is two separate
-tokens, convenience is one.
+Publishing on this repo uses the workflow's own `GITHUB_TOKEN`; no PAT is needed for it.
 
 ```bash
-gh secret set CI_SUBMODULE_TOKEN --repo simplebash-official/pos-compose --body "<paste PAT>"
-gh secret set TAURI_SIGNING_PRIVATE_KEY --repo simplebash-official/pos-compose \
+gh secret set TAURI_SIGNING_PRIVATE_KEY --repo simplebash-official/pos-desktop \
   < ~/.simplebash-updater/simplebash-updater.key
-gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo simplebash-official/pos-compose --body ""
-gh secret set RELEASES_REPO_TOKEN --repo simplebash-official/pos-compose --body "<paste PAT>"
+gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --repo simplebash-official/pos-desktop --body "<key password>"
+gh secret set RELEASES_REPO_TOKEN --repo simplebash-official/pos-desktop --body "<paste PAT>"
 ```
 
 ## Cutting a release
@@ -127,7 +131,7 @@ Normally you don't — merge a `feat:` / `fix:` / `perf:` / breaking commit to
 
 Watch the run: `release / prepare` → `desktop-build / version-check` → 3 `build`
 jobs → `publish`. When it is green,
-`https://github.com/simplebash-official/releases/releases/latest/download/latest.json`
+`https://github.com/simplebash-official/pos-desktop/releases/latest/download/latest.json`
 resolves and installed apps will offer the update.
 
 ### Emergency / offline
@@ -146,7 +150,7 @@ you tick `publish`) — use it to check a build.
 ## Verifying
 
 ```bash
-curl -sL https://github.com/simplebash-official/releases/releases/latest/download/latest.json | jq
+curl -sL https://github.com/simplebash-official/pos-desktop/releases/latest/download/latest.json | jq
 ```
 
 Every `platforms.*` URL must resolve (200) and there must be one entry each for

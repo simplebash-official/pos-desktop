@@ -3,15 +3,18 @@ name: tauri-ci
 # Lightweight PR check for the desktop shell (src-tauri): fmt/clippy/test only,
 # no signing, no publishing, no bundling. Unlike release.yml/desktop-build.yml
 # this needs no `github.repository ==` guard — it holds no privileged secrets
-# and is safe to run on a fork. (A fork PR simply has no `CI_SUBMODULE_TOKEN`,
-# so its submodule checkout fails cleanly rather than leaking the token —
-# GitHub does not expose secrets to `pull_request` runs from forks.)
+# and is safe to run on a fork: the submodule repos are public, so the
+# built-in token clones them (GitHub never exposes secrets such as
+# `CI_SUBMODULE_TOKEN` to `pull_request` runs from forks).
 #
 # `cargo check`/`clippy`/`test` on src-tauri still needs backend + document-server
 # built and staged as sidecars first: `tauri_build::build()` hard-fails at
 # compile time if `bundle.externalBin`'s target files don't exist (confirmed by
 # temporarily hiding src-tauri/binaries/ locally and re-running `cargo check`),
 # so this can't skip straight to cargo commands the way a plain Rust crate could.
+
+permissions:
+  contents: read
 
 on:
   pull_request:
@@ -31,9 +34,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          # Same read-only PAT desktop-build.yml uses to clone the private
-          # backend/document-server/frontend submodules.
-          token: ${{ secrets.CI_SUBMODULE_TOKEN }}
+          # CI_SUBMODULE_TOKEN only matters while a submodule repo is private.
+          token: ${{ secrets.CI_SUBMODULE_TOKEN || github.token }}
+          persist-credentials: false
 
       - name: Install Linux bundling dependencies
         # Same package list as desktop-build.yml's ubuntu-22.04 release job —

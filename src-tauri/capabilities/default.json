@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core permissions for the splash and main windows, plus permission to run the bundled backend / document-server sidecars.",
-  "windows": ["main", "splashscreen"],
+  "description": "Core permissions for the splash and main windows. The backend / document-server sidecars are spawned from Rust (orchestrator.rs), so the webview gets no shell permission at all \u2014 injected script must not be able to relaunch them with its own environment.",
+  "windows": [
+    "main",
+    "splashscreen"
+  ],
   "permissions": [
     "core:default",
     "core:window:allow-show",
@@ -12,13 +15,6 @@
     "core:event:default",
     "updater:default",
     "process:allow-restart",
-    "devtools:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        { "name": "binaries/simplebash-backend", "sidecar": true },
-        { "name": "binaries/simplebash-document-server", "sidecar": true }
-      ]
-    }
+    "devtools:default"
   ]
 }

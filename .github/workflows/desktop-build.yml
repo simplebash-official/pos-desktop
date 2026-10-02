@@ -1,8 +1,10 @@
 name: desktop-build
 
 # Builds the Tauri desktop bundle for Linux + Windows + macOS and, when asked to,
-# publishes a GitHub Release + the Tauri updater manifest (`latest.json`) to the
-# public `simplebash-official/releases` repo.
+# publishes a GitHub Release + the Tauri updater manifest (`latest.json`) on this
+# repo (`simplebash-official/pos-desktop`). While installs from before v0.8 still
+# poll the old `simplebash-official/releases` feed, the same release is mirrored
+# there too when `RELEASES_REPO_TOKEN` is set (remove the secret to stop).
 #
 # Three ways in:
 #   workflow_call   — `.github/workflows/release.yml` calls this after it has
@@ -13,11 +15,18 @@ name: desktop-build
 #   push: tags: v*  — emergency / offline path: `scripts/release.sh <ver>` then
 #                     `git push origin v<ver>` → build + publish.
 #
-# Required repo secrets:
-#   CI_SUBMODULE_TOKEN                  PAT, Contents:read on backend + pdf-server + frontend + compose
-#   TAURI_SIGNING_PRIVATE_KEY           minisign private key (from `tauri signer generate`)
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password ("" if generated without one)
-#   RELEASES_REPO_TOKEN                 PAT, Contents:write on simplebash-official/releases
+# Repo secrets:
+#   TAURI_SIGNING_PRIVATE_KEY           minisign private key (from `tauri signer generate`) — required
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password — required; generate the key WITH one
+#   CI_SUBMODULE_TOKEN                  optional: only while a submodule repo is still private
+#   RELEASES_REPO_TOKEN                 optional: PAT, Contents:write on simplebash-official/releases,
+#                                       for the transition mirror described above
+#
+# Supply-chain note: the signing key can push an update to every installed POS,
+# so it is only present in the one step that needs it (`tauri build`). The
+# frontend and sidecars — and every npm/cargo dependency they run — are built
+# in earlier steps that never see it, and `tauri build` is told not to re-run
+# them (`beforeBuildCommand: null`).
 #
 # OS-level code signing (Apple notarization, Windows Authenticode) is not wired
 # yet — bundles are unsigned to the OS; the updater artifacts are signed.
@@ -70,6 +79,8 @@ jobs:
         shell: bash
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
         run: |
           # package.json is the single source of truth. tauri.conf.json points at
           # it (`"version": "../package.json"`), so resolve rather than read raw.
@@ -89,7 +100,7 @@ jobs:
             exit 1
           fi
 
-          if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          if [ "$EVENT_NAME" = "push" ] && [[ "$GIT_REF" == refs/tags/v* ]]; then
             if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
               echo "::error::tag ${GITHUB_REF_NAME} does not match version $version (run scripts/release.sh)"
               exit 1
@@ -120,11 +131,12 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
-          # The built-in GITHUB_TOKEN can't read the sibling private repos
-          # (backend / document-server / frontend). CI_SUBMODULE_TOKEN is a
-          # read-only PAT with Contents:read on all four repos; checkout uses
-          # it for the submodule clones too.
-          token: ${{ secrets.CI_SUBMODULE_TOKEN }}
+          # The submodule repos are public, so the built-in token is enough;
+          # CI_SUBMODULE_TOKEN is only needed while one of them is private.
+          token: ${{ secrets.CI_SUBMODULE_TOKEN || github.token }}
+          # Don't leave a credential in .git/config for later steps (and the
+          # dependencies they run) to read.
+          persist-credentials: false
 
       - name: Install Linux bundling dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -150,9 +162,9 @@ jobs:
             backend
             document-server
 
-      - name: Install root + frontend deps
+      - name: Install root + frontend deps (lockfile-exact)
         run: |
-          npm install
+          npm ci
           npm --prefix frontend ci
 
       - name: Configure desktop environment
@@ -162,8 +174,14 @@ jobs:
         shell: bash
         run: bash scripts/build-sidecars.sh
 
+      - name: Build frontend (no signing secrets in this step)
+        run: npm --prefix frontend run build:tauri
+
       - name: Build desktop bundle (and sign updater artifacts)
-        run: npm run tauri build
+        # Sidecars and frontend were built above; `beforeBuildCommand: null`
+        # stops tauri from re-running them with the signing key in the env.
+        shell: bash
+        run: npm run tauri build -- --config '{"build":{"beforeBuildCommand":null}}'
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -193,6 +211,8 @@ jobs:
     needs: [version-check, build]
     if: ${{ inputs.publish || startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release on this repo
     env:
       TAG: v${{ needs.version-check.outputs.version }}
     steps:
@@ -200,6 +220,7 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch tags
         run: git fetch --tags --force
@@ -258,7 +279,7 @@ jobs:
             --artifacts artifacts \
             --version "${{ needs.version-check.outputs.version }}" \
             --tag "${TAG}" \
-            --repo simplebash-official/releases \
+            --repo "${GITHUB_REPOSITORY}" \
             --notes "$(head -c 2000 CHANGELOG.md)" \
             --out latest.json)
           echo "Assets to upload:"
@@ -271,12 +292,40 @@ jobs:
           echo "--- latest.json ---"
           cat latest.json
 
-      - name: Publish release to simplebash-official/releases
+      - name: Publish release on this repo
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          ASSET_LIST: ${{ steps.manifest.outputs.files }}
         shell: bash
         run: |
-          mapfile -t assets < <(printf '%s\n' "${{ steps.manifest.outputs.files }}" | sed '/^$/d')
+          mapfile -t assets < <(printf '%s\n' "$ASSET_LIST" | sed '/^$/d')
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber "${assets[@]}"
+          else
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "SimpleBash POS ${TAG}" \
+              --notes-file NOTES.md \
+              --verify-tag \
+              "${assets[@]}"
+          fi
+
+      # Transition: installs older than v0.8 only know the old feed
+      # (simplebash-official/releases). Mirroring the same assets + latest.json
+      # there lets them update to a build that reads this repo's feed. Its
+      # latest.json already points at this repo's download URLs. Drop the
+      # RELEASES_REPO_TOKEN secret once old installs have moved on.
+      - name: Mirror release to legacy simplebash-official/releases feed
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+          ASSET_LIST: ${{ steps.manifest.outputs.files }}
+        shell: bash
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "RELEASES_REPO_TOKEN not set; skipping the legacy mirror."
+            exit 0
+          fi
+          mapfile -t assets < <(printf '%s\n' "$ASSET_LIST" | sed '/^$/d')
           if gh release view "${TAG}" --repo simplebash-official/releases >/dev/null 2>&1; then
             gh release upload "${TAG}" --repo simplebash-official/releases --clobber "${assets[@]}"
           else

@@ -98,9 +98,14 @@ npm run web:down
 - **Backend Swagger Docs**: [http://localhost:8080/docs](http://localhost:8080/docs)
 - **Document Server Health**: [http://localhost:8090/api/health](http://localhost:8090/api/health)
 
-Default initial admin bootstrapped by seeder:
+Local development only — the seeder's default admin (used when `SEED_ADMIN_PASSWORD`
+is not set and the backend listens on loopback):
 - **Email**: `admin@pos.com`
 - **Password**: `admin@1234`
+
+This password is public, so change it after first login on any real install. A
+backend listening on a non-loopback address refuses to auto-seed it, and
+production (`APP_ENV=production`) refuses to seed without `SEED_ADMIN_PASSWORD`.
 
 ---
 
@@ -151,8 +156,8 @@ points its `version` there), commits + tags `vX.Y.Z` on `main`, then builds and
 publishes.
 
 CI builds Linux (AppImage/deb), Windows (NSIS) and macOS (dmg), signs the updater
-artifacts, and publishes a GitHub Release + `latest.json` to the **public**
-`simplebash-official/releases` repo. Installed apps check that feed from
+artifacts, and publishes a GitHub Release + `latest.json` on this repo's
+[Releases](https://github.com/simplebash-official/pos-desktop/releases) page. Installed apps check that feed from
 `Settings → Updates`, download, install and relaunch. Local data
 (`%APPDATA%\com.simplebash.pos\` / `~/Library/Application Support/com.simplebash.pos/`) is
 never touched by an update — see `src-tauri/README.md`.
@@ -161,6 +166,5 @@ Emergency / offline path: `scripts/release.sh --auto --bump-submodules` then
 `git push && git push origin v<ver>`. Full runbook in
 [`RELEASE.md`](RELEASE.md).
 
-**One-time setup** — see [`.github/RELEASING.md`](.github/RELEASING.md): create the
-public `releases` repo, generate the updater key, and add the repo secrets. (No
-branch-protection change needed unless `main` later gets a restrictive ruleset.)
+**One-time setup** — see [`.github/RELEASING.md`](.github/RELEASING.md): branch
+protection on all four repos, the updater key, and the repo secrets.

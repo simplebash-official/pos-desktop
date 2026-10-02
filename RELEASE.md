@@ -5,7 +5,7 @@ Two things ship separately:
 - **Web** (`frontend` / `backend` / `document-server`) — deploys **automatically** on every
   push to each repo's default branch. No release needed. Browsers pick it up within ~15 min
   (the "Update available" prompt) or via **Settings → Updates**.
-- **Desktop** (this `pos-compose` repo) — ships **automatically** when a release-worthy commit
+- **Desktop** (this `pos-desktop` repo) — ships **automatically** when a release-worthy commit
   lands on `main`. The rest of this file is about that.
 
 The desktop app bundles *pinned* commits of the three submodules; the release pipeline pulls
@@ -19,7 +19,7 @@ the next desktop release automatically.
 1. Make your change in the right repo, on a branch, and open a PR.
    - UI / API / PDF templates → `frontend` (branch `main`), `backend` (branch `master`), or
      `document-server` (branch `main`).
-   - Desktop shell / orchestrator / CI → this `pos-compose` repo (branch `main`).
+   - Desktop shell / orchestrator / CI → this `pos-desktop` repo (branch `main`).
 2. **Write the commit (or PR title, if you squash-merge) as a Conventional Commit:**
 
    | prefix | effect | version bump |
@@ -31,18 +31,19 @@ the next desktop release automatically.
 
 3. Merge to the default branch.
    - A web repo → the web deploy runs itself.
-   - This `pos-compose` repo → `.github/workflows/release.yml` runs. If your commit was
+   - This `pos-desktop` repo → `.github/workflows/release.yml` runs. If your commit was
      `feat:` / `fix:` / `perf:` / breaking, it:
      1. computes the next version,
      2. pulls `frontend` + `backend` + `document-server` to their latest tips,
      3. bumps `package.json`,
      4. commits `chore(release): vX.Y.Z [skip ci]` + tags `vX.Y.Z` on `main`,
-     5. builds macOS + Linux + Windows and publishes the GitHub Release + `latest.json` to
-        `simplebash-official/releases`.
+     5. builds macOS + Linux + Windows and publishes the GitHub Release + `latest.json` on
+        this repo (mirrored to the legacy `simplebash-official/releases` feed during the
+        transition — see `.github/RELEASING.md`).
 
 That's it. No script, no manual tag.
 
-> **Only changed a web repo?** You still need one releasable commit on `pos-compose` to ship a
+> **Only changed a web repo?** You still need one releasable commit on `pos-desktop` to ship a
 > desktop build (the release pipeline picks up the newer submodule tips regardless). Merge a
 > `fix:`/`feat:` there, or push an empty one: `git commit --allow-empty -m "fix: pull latest
 > submodules" && git push`.
@@ -51,20 +52,20 @@ That's it. No script, no manual tag.
 
 ## Watch (~25 min)
 
-<https://github.com/simplebash-official/pos-compose/actions>
+<https://github.com/simplebash-official/pos-desktop/actions>
 
 `release / prepare` → `desktop-build / version-check` → `build` ×3 (macOS Apple Silicon ·
 Linux · Windows) → `publish`.
 
 `publish` creates the GitHub Release + `latest.json` on
-<https://github.com/simplebash-official/releases>.
+<https://github.com/simplebash-official/pos-desktop/releases>.
 
 ---
 
 ## Verify
 
 ```bash
-curl -sL https://github.com/simplebash-official/releases/releases/latest/download/latest.json | jq .version
+curl -sL https://github.com/simplebash-official/pos-desktop/releases/latest/download/latest.json | jq .version
 # → "0.2.2"
 ```
 
@@ -89,7 +90,7 @@ version** — the pipeline (or `scripts/release.sh`) owns it.
 When CI can't do it (offline, Actions outage, or you must pin specific submodule commits):
 
 ```bash
-cd ~/Documents/projects/personal/jana2u-pos
+cd pos-desktop
 git checkout main && git pull
 git status                                  # must be clean
 
@@ -111,4 +112,4 @@ git push && git push origin v0.2.2         # the tag push starts the build + pub
   More info → Run anyway. In-app updates after that are clean. See `.github/RELEASING.md`.
 - **`workflow_dispatch`** (Actions → desktop-build → Run workflow) builds all 3 platforms;
   it publishes only if you tick `publish`. Use it to check a build.
-- One-time CI setup (secrets, the releases repo) lives in `.github/RELEASING.md`.
+- One-time CI setup (secrets, branch protection, the legacy feed) lives in `.github/RELEASING.md`.

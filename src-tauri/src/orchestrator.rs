@@ -100,8 +100,10 @@ impl Sidecars {
 }
 
 /// Locally generated secrets, persisted so logins and the backend <->
-/// document-server handshake survive restarts. Plaintext on disk: these are
-/// secrets for services that only ever listen on this machine's loopback.
+/// document-server handshake survive restarts. Plaintext on disk (these are
+/// secrets for services that only ever listen on this machine's loopback),
+/// but readable by the current user only — anyone holding `jwt_secret` can
+/// mint an Admin token for the local backend.
 #[derive(Serialize, Deserialize)]
 struct Secrets {
     /// Backend `JWT_SECRET`. Never regenerated once written — a change logs
@@ -127,9 +129,30 @@ fn hex64() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Narrows `path` to owner read/write (0600). On Windows the file already
+/// inherits the per-user ACL of the app-data directory, so there is nothing
+/// to do. Best effort on an existing file: a failure is logged, not fatal.
+fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 fn load_or_create_secrets(config_path: &Path) -> std::io::Result<Secrets> {
     if let Ok(raw) = fs::read_to_string(config_path) {
         if let Ok(secrets) = serde_json::from_str::<Secrets>(&raw) {
+            // Installs from before this check wrote the file world-readable.
+            if let Err(err) = restrict_to_owner(config_path) {
+                LogEvent::shell("lifecycle", "secrets.chmod_failed")
+                    .msg("could not restrict local secrets file to the current user")
+                    .data(json!({ "path": config_path, "error": err.to_string() }))
+                    .emit();
+            }
             return Ok(secrets);
         }
     }
@@ -138,6 +161,7 @@ fn load_or_create_secrets(config_path: &Path) -> std::io::Result<Secrets> {
         internal_api_key: hex64(),
     };
     fs::write(config_path, serde_json::to_string_pretty(&secrets).unwrap())?;
+    restrict_to_owner(config_path)?;
     LogEvent::shell("lifecycle", "secrets.generated")
         .msg("generated new local service secrets")
         .data(json!({ "path": config_path }))

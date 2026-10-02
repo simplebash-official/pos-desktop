@@ -32,6 +32,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFEOEJBQ0MwRkI4NjM2NjQKUldSa05vYjd3S3lMclFad1hNcW5MK2NCSnhvYnFDUE1RaDQ3czJzL2pSaGo2N0tmeUhmaVN0RkMK",
       "endpoints": [
+        "https://github.com/simplebash-official/pos-desktop/releases/latest/download/latest.json",
         "https://github.com/simplebash-official/releases/releases/latest/download/latest.json"
       ]
     }

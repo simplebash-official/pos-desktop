@@ -43,3 +43,8 @@ src-tauri/graphify-out/
 /target/
 
 
+
+# Local AI-tooling / knowledge-graph output (kept on disk, never committed)
+.agents/
+.obsidian/
+skills-lock.json

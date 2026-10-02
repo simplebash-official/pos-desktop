@@ -61,31 +61,44 @@ jobs:
         id: compute
         run: scripts/ci/next-version.sh
 
+      # Takes the tip of each submodule's tracked branch, so whatever is merged
+      # there ships in a signed update to every install. Keep `master`/`main`
+      # on pos-backend, pos-frontend and document-server protected (PRs with a
+      # required review, no direct pushes) — see .github/RELEASING.md.
       - name: Bump submodule pins to their tracked branches
         if: steps.compute.outputs.release == 'true'
         env:
+          # Only needed while a submodule repo is still private.
           SUBMODULE_TOKEN: ${{ secrets.CI_SUBMODULE_TOKEN }}
         run: |
-          git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          if [ -n "${SUBMODULE_TOKEN}" ]; then
+            git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
           git submodule sync
           git submodule update --init --remote --depth 1 -- frontend backend document-server
-          git config --global --unset url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf
+          if [ -n "${SUBMODULE_TOKEN}" ]; then
+            git config --global --unset url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf
+          fi
           git submodule status
 
       - name: Bump version (package.json is the single source of truth)
         if: steps.compute.outputs.release == 'true'
-        run: python3 scripts/set-version.py "${{ steps.compute.outputs.version }}"
+        env:
+          VERSION: ${{ steps.compute.outputs.version }}
+        run: python3 scripts/set-version.py "$VERSION"
 
       - name: Commit + tag on main
         if: steps.compute.outputs.release == 'true'
+        env:
+          TAG: ${{ steps.compute.outputs.tag }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "chore(release): ${{ steps.compute.outputs.tag }} [skip ci]"
-          git tag -a "${{ steps.compute.outputs.tag }}" -m "SimpleBash POS desktop ${{ steps.compute.outputs.tag }}"
+          git commit -m "chore(release): ${TAG} [skip ci]"
+          git tag -a "${TAG}" -m "SimpleBash POS desktop ${TAG}"
           git push origin HEAD:main
-          git push origin "${{ steps.compute.outputs.tag }}"
+          git push origin "${TAG}"
 
   desktop:
     needs: prepare
