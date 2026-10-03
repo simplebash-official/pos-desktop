@@ -1,170 +1,166 @@
-# SimpleBash POS System
+# SimpleBash POS — Desktop
 
-Full-stack POS (Point of Sale) system orchestrated via Docker Compose.
+[![tauri-ci](https://github.com/simplebash-official/pos-desktop/actions/workflows/tauri-ci.yml/badge.svg)](https://github.com/simplebash-official/pos-desktop/actions/workflows/tauri-ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/simplebash-official/pos-desktop)](https://github.com/simplebash-official/pos-desktop/releases/latest)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
-## Architecture
+**SimpleBash POS** as an installable app for **Windows, macOS and Linux** — a
+point-of-sale system for repair and retail shops that runs entirely on the
+shop's own computer and keeps working without an internet connection.
 
-| Service | Technology | Internal Port | Host Port | Description |
-| :--- | :--- | :--- | :--- | :--- |
-| **`document-server`** | Rust / Axum / Typst | `8090` | `8090` | PDF & document generation engine (SQLite-backed) |
-| **`backend`** | Rust / Axum / MongoDB | `8080` | `8080` | Core POS REST API & business logic |
-| **`frontend`** | React / Vite / Nginx | `8081` | `8081` | Cashier UI / POS Single Page App |
+It is a [Tauri 2](https://tauri.app) shell that bundles the three SimpleBash
+services into one app:
 
----
+- the [backend](https://github.com/simplebash-official/pos-backend) API and the
+  [document-server](https://github.com/simplebash-official/document-server)
+  run as background processes, reachable only from the same computer (`127.0.0.1:8080` / `:8090`);
+- the [frontend](https://github.com/simplebash-official/pos-frontend) runs in the app window;
+- data is stored in local SQLite databases.
 
----
+## The SimpleBash POS family
 
-## Build & Deployment Environments
+| Repository | What it is |
+|---|---|
+| [pos-backend](https://github.com/simplebash-official/pos-backend) | REST API — Rust / Axum, SQLite or MongoDB |
+| [pos-frontend](https://github.com/simplebash-official/pos-frontend) | The cashier & back-office UI — React / Vite / Mantine |
+| [document-server](https://github.com/simplebash-official/document-server) | Renders invoices, receipts, reports and labels to PDF — Rust / Typst |
+| **pos-desktop** (this repo) | Windows / macOS / Linux app (Tauri) that bundles all three |
 
-SimpleBash POS supports two distinct operational environments:
+This repo holds only the desktop shell (`src-tauri/`), the build and release
+pipeline, and docs. The three services are included as git submodules.
 
-1. **Desktop App (Tauri + SQLite)**:
-   - Standalone offline POS cashier terminal.
-   - Bundles backend & document-server as local sidecar processes on loopback (`127.0.0.1`).
-   - Uses embedded local SQLite database files (stored in OS user AppData directory).
-   - Zero external network dependencies.
+## Install
 
-2. **Web & Server Deployment (Docker Compose + MongoDB)**:
-   - Multi-terminal network deployment accessible via web browsers.
-   - Core API connects to a MongoDB cluster (e.g. MongoDB Atlas) or an optional containerized Mongo service.
-   - Frontend SPA is served behind an Nginx reverse proxy routing `/api` to the backend.
+Download the installer for your system from the
+[latest release](https://github.com/simplebash-official/pos-desktop/releases/latest):
 
----
+| System | File |
+|---|---|
+| Windows (64-bit) | `…-setup.exe` |
+| macOS (Apple Silicon) | `.dmg` |
+| Linux (x86-64) | `.AppImage` |
 
-## 1. Desktop Build Workflow (Tauri + SQLite)
+The installers are not yet signed by Apple or Microsoft, so the first launch
+needs one extra step:
 
-### Setup & Development
-```bash
-# 1. Switch to desktop environment configuration
-npm run env:desktop
+- **macOS** — after moving the app to Applications, run once in Terminal:
+  `xattr -dr com.apple.quarantine "/Applications/SimpleBash POS.app"`
+  (otherwise macOS says the app "is damaged" — it isn't).
+- **Windows** — SmartScreen shows "unknown publisher": choose **More info → Run anyway**.
 
-# 2. Build local sidecar binaries (backend + document-server)
-npm run sidecars
+On first launch a setup wizard creates the shop's admin account and can load
+sample data to explore with.
 
-# 3. Launch Tauri in development mode
-npm run dev
-```
+### Updates
 
-### Building the Desktop Installer
-```bash
-npm run build:desktop
-# Outputs desktop installers (.dmg / .app on macOS, NSIS .exe on Windows) to src-tauri/target/release/bundle/
-```
+**Settings → Updates → Check for updates** downloads, verifies and installs a
+new version, then restarts the app. Updates are signed, and the app refuses
+any update not signed with the project's key. In-app updates don't need the
+first-launch steps above.
 
----
+### Where your data lives
 
-## 2. Web & Server Deployment (Docker Compose + MongoDB)
+Everything the app writes is kept in one folder, which updates never touch:
 
-### Setup & Configuration
-```bash
-# 1. Switch to web environment configuration
-npm run env:web
+- macOS: `~/Library/Application Support/com.simplebash.pos/`
+- Windows: `%APPDATA%\com.simplebash.pos\`
+- Linux: `~/.local/share/com.simplebash.pos/`
 
-# 2. Open .env and set your MongoDB URI & production secrets:
-#    - MONGODB_URI (e.g. your MongoDB Atlas cluster URI)
-#    - MONGODB_DB_NAME=simplebash_pos_prod
-#    - JWT_SECRET (generate via: openssl rand -hex 32)
-#    - DOCUMENT_SERVER_API_KEY (generate via: openssl rand -hex 32)
-```
+It holds the databases, generated PDFs, logs and the app's locally generated
+secrets. Back up that whole folder, or use **Settings → Backup** inside the app.
 
-### Start the Web Stack
-```bash
-# Start all containers in detached mode
-npm run web:up
-# (Equivalent to: docker compose --env-file .env.web up -d)
+### Optional: cloud account and sync
 
-# Follow backend logs to confirm database connection & auto-seeding
-npm run web:logs
-```
+Builds made with a cloud address (`CLOUD_API_URL`, set at build time) show an
+optional step to create or link a SimpleBash account and sync the shop's data
+across devices. Builds without it run fully offline and never contact a server.
 
-> [!TIP]
-> **Optional Self-Hosted MongoDB**:
-> If you prefer running MongoDB directly in Docker rather than using MongoDB Atlas, add `--profile mongo` and set `MONGODB_URI=mongodb://mongo:27017` in `.env.web`:
-> ```bash
-> docker compose --profile mongo --env-file .env.web up -d
-> ```
+## Develop
 
-### Stopping the Web Stack
-```bash
-npm run web:down
-```
+### Prerequisites
 
----
+- [Rust](https://rustup.rs) stable and [Node.js](https://nodejs.org) 22
+- Tauri's system dependencies for your OS —
+  see [Tauri prerequisites](https://tauri.app/start/prerequisites/)
+  (on Linux: `libwebkit2gtk-4.1-dev`, `librsvg2-dev`, `patchelf` and friends)
 
-## Access Points (Web / Server)
-
-- **Web Frontend**: [http://localhost:8081](http://localhost:8081) (or your configured domain)
-- **Backend Health Check**: [http://localhost:8080/api/health](http://localhost:8080/api/health)
-- **Backend Swagger Docs**: [http://localhost:8080/docs](http://localhost:8080/docs)
-- **Document Server Health**: [http://localhost:8090/api/health](http://localhost:8090/api/health)
-
-Local development only — the seeder's default admin (used when `SEED_ADMIN_PASSWORD`
-is not set and the backend listens on loopback):
-- **Email**: `admin@pos.com`
-- **Password**: `admin@1234`
-
-This password is public, so change it after first login on any real install. A
-backend listening on a non-loopback address refuses to auto-seed it, and
-production (`APP_ENV=production`) refuses to seed without `SEED_ADMIN_PASSWORD`.
-
----
-
-## Stopping the Stack
+### Run the app from source
 
 ```bash
-docker compose down
+git clone --recurse-submodules https://github.com/simplebash-official/pos-desktop.git
+cd pos-desktop
+npm ci                           # Tauri CLI
+npm --prefix frontend ci         # frontend dependencies
+npm run sidecars                 # build backend + document-server, stage templates/fonts
+npm run dev                      # start the app (frontend hot-reloads)
 ```
 
-To wipe persistent SQLite data and generated invoice PDFs:
+`npm run sidecars` compiles the two Rust services in release mode, so the first
+run takes a while. Re-run it after changing the backend or document-server.
+
+### Build an installer
+
 ```bash
-docker compose down -v
+npm run build:desktop            # → src-tauri/target/release/bundle/
+bash scripts/build-with-cloud.sh # the same, with cloud sign-in and sync enabled
 ```
 
----
+Local builds can't produce the signed update bundle (only CI has the signing
+key); you still get a working app and installer.
 
-## Updating Submodules
-
-To pull the latest changes from all service repositories:
+### Checks
 
 ```bash
-git submodule update --remote --merge
+cargo fmt   --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+cargo test  --manifest-path src-tauri/Cargo.toml
 ```
 
----
+Changes to the backend, frontend or document-server belong in their own
+repositories, not in the submodule folders here.
 
-## Releases & Updates
+### Project layout
 
-Two independent update channels:
+```
+src-tauri/
+  src/orchestrator.rs   starts the two services, waits until healthy, shows the window
+  src/cloud/            optional cloud account sign-in and device linking
+  src/sync/             background sync agent
+  src/logging/          unified activity log (Settings → Activity Log)
+  src/printer.rs        native PDF printing (macOS print dialog via PDFKit)
+  tauri.conf.json       windows, security policy, bundled binaries, updater
+backend/ frontend/ document-server/   git submodules
+scripts/                build, release and diagnostic scripts
+docs/logging.md         activity log format
+```
 
-### Web
+More detail on the shell: [`src-tauri/README.md`](src-tauri/README.md).
 
-Pushing to `frontend` / `backend` / `document-server` builds a `:latest` image and
-redeploys (each repo's `deploy.yml`). Browsers pick it up automatically: the running
-app re-checks the service worker every ~15 min and shows an **"Update available"**
-prompt (withheld while a sale is on the till). Clicking **Update now** asks for
-confirmation, then reloads. `Settings → Updates` shows the running version
-(also at `/version.json`) and a manual **Check for updates** button.
+## Releases
 
-### Desktop
+Releases are automatic. Merging a [Conventional Commit](https://www.conventionalcommits.org)
+to `main` with `feat:` (minor), `fix:` / `perf:` (patch) or a breaking change
+runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
 
-Releases are automatic. Merge a Conventional Commit to `main` and
-`.github/workflows/release.yml` does the rest — `feat:` → minor, `fix:`/`perf:` →
-patch, `<type>!` / `BREAKING CHANGE` → bump; `docs`/`chore`/`ci`/`refactor` ship
-nothing. It computes the next version, pulls the three submodules to their latest
-tips, bumps `package.json` (the single source of truth — `src-tauri/tauri.conf.json`
-points its `version` there), commits + tags `vX.Y.Z` on `main`, then builds and
-publishes.
+1. works out the next version,
+2. moves the three submodules to their latest commits,
+3. bumps `package.json` (the single source of the app version) and tags `vX.Y.Z`,
+4. builds macOS, Windows and Linux, signs the update bundles, and publishes a
+   GitHub Release with the `latest.json` update manifest that installed apps check.
 
-CI builds Linux (AppImage/deb), Windows (NSIS) and macOS (dmg), signs the updater
-artifacts, and publishes a GitHub Release + `latest.json` on this repo's
-[Releases](https://github.com/simplebash-official/pos-desktop/releases) page. Installed apps check that feed from
-`Settings → Updates`, download, install and relaunch. Local data
-(`%APPDATA%\com.simplebash.pos\` / `~/Library/Application Support/com.simplebash.pos/`) is
-never touched by an update — see `src-tauri/README.md`.
+`docs:`, `chore:`, `ci:`, `refactor:`, `test:` and `style:` commits release nothing.
+Runbook: [`RELEASE.md`](RELEASE.md); one-time setup: [`.github/RELEASING.md`](.github/RELEASING.md).
 
-Emergency / offline path: `scripts/release.sh --auto --bump-submodules` then
-`git push && git push origin v<ver>`. Full runbook in
-[`RELEASE.md`](RELEASE.md).
+## Contributing
 
-**One-time setup** — see [`.github/RELEASING.md`](.github/RELEASING.md): branch
-protection on all four repos, the updater key, and the repo secrets.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Please use Conventional Commit
+messages — on this repo they decide whether a merge ships a release.
+
+## Security
+
+See [`SECURITY.md`](SECURITY.md). Report vulnerabilities privately through
+[GitHub's "Report a vulnerability"](https://github.com/simplebash-official/pos-desktop/security/advisories/new).
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE).

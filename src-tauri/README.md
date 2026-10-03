@@ -13,7 +13,7 @@ processes** on loopback; the webview loads the compiled frontend and talks to
 | `src/orchestrator.rs` | app-data dirs, generated secrets (`config.json`), first-run Typst asset copy, `SIDECARS` table + spawn + health-gate, reveal main window |
 | `src/logging/` | unified activity log hub: event schema, writer thread, redaction, sidecar/frontend ingest, retention, viewer commands |
 | `tauri.conf.json` | windows (splash + hidden main), CSP, `externalBin`, `resources` |
-| `capabilities/default.json` | core perms + the two sidecar `shell:allow-execute` scopes |
+| `capabilities/default.json` | window/event/updater permissions for the webview; no shell access (the sidecars are spawned from Rust) |
 | `entitlements.plist` | macOS hardened-runtime entitlements (loopback networking, run unsigned-by-Apple sidecars) |
 | `binaries/` | *(gitignored)* sidecar binaries, produced by `scripts/build-sidecars.sh` |
 | `resources/` | *(gitignored)* staged `templates/` + `fonts/` for document-server |
@@ -56,7 +56,7 @@ Updates are delivered through the Tauri updater:
 
 | Piece | Where |
 |---|---|
-| Update feed | `https://github.com/simplebash-official/releases` → `latest.json` on the newest release |
+| Update feed | `https://github.com/simplebash-official/pos-desktop/releases/latest/download/latest.json` |
 | Signature check | `plugins.updater.pubkey` in `tauri.conf.json` (minisign; the private key is a CI secret) |
 | Trigger | user clicks **Check for updates** in Settings — no silent/auto install |
 
@@ -82,8 +82,8 @@ npm run tauri build                # -> .app + .dmg (macOS) / .exe (Windows, NSI
 Cross-OS builds (Linux AppImage, Windows NSIS, macOS dmg) run in CI on every
 releasable push to `main` (and on a manual `v*` tag) —
 `.github/workflows/desktop-build.yml` builds every platform, signs the updater
-artifacts, and publishes a GitHub Release plus `latest.json` to the public
-`simplebash-official/releases` repo. OS-level code signing (Apple Developer ID +
+artifacts, and publishes a GitHub Release plus `latest.json` on this repo
+(`simplebash-official/pos-desktop`). OS-level code signing (Apple Developer ID +
 notarization, Windows Authenticode) is still deferred — the bundles are unsigned
 to the OS, but the updater artifacts are cryptographically signed so auto-update
 stays safe.

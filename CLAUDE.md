@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-The **desktop shell repo** (`pos-desktop`) for **simplebash-pos**. It pulls three private repos in as git
+The **desktop shell repo** (`pos-desktop`) for **simplebash-pos**. It pulls three public repos in as git
 submodules — `backend` (repo `pos-backend`, Rust/Axum API, branch `master`), `document-server`
 (repo `document-server` — shared across future apps, not POS-specific, branch `main`), `frontend`
 (repo `pos-frontend`, React/Vite/Mantine PWA, branch `main`) — and adds a
@@ -104,9 +104,9 @@ use it to check a build) · `push: tags: v*` (the emergency path above).
 
 ### Branch protection
 
-None needed on the current Free-org / private-repo setup — the pipeline pushes the release commit
-+ tag to `main` directly. Only matters if `main` later gets a restrictive ruleset (Team plan or
-public repo): then add a `github-actions[bot]` bypass. Setup + fallback: `.github/RELEASING.md`.
+`main` has a ruleset that blocks force-pushes and deletion (org admins bypass). The release
+commit + tag are ordinary fast-forward pushes, so the pipeline is unaffected. Setup + fallback:
+`.github/RELEASING.md`.
 End-user runbook: `RELEASE.md`.
 
 ## Commands
@@ -120,8 +120,7 @@ npm run tauri build              # desktop installers → src-tauri/target/relea
 
 scripts/ci/next-version.sh --dry-run   # what version the next push to main would ship ("none" = nothing)
 
-npm run env:desktop / env:web    # select the .env for the target
-npm run web:up / web:down        # docker compose for the self-hosted web stack
+npm run env:desktop              # copy .env.desktop.example to .env
 ```
 
 Rust gates for `src-tauri/`: `cargo fmt`, `cargo clippy --manifest-path src-tauri/Cargo.toml`,
