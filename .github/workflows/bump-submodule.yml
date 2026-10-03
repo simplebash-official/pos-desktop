@@ -1,0 +1,136 @@
+name: bump-submodule
+
+# Keeps the frontend / backend / document-server pins current by opening a PR.
+#
+# pos-frontend, pos-backend and document-server each send a
+# `repository_dispatch` (event type `submodule-updated`, see their
+# `notify-desktop.yml`) when their tracked branch moves. This workflow then
+# moves that submodule's pin to the branch tip on `bot/bump-<submodule>` and
+# opens (or updates) a PR. One PR per submodule, updated in place.
+#
+# Nothing ships until that PR is merged: it runs tauri-ci, a human (or auto-merge,
+# if you turn it on) merges it, and the merge commit on `main` — typed `feat` /
+# `fix` / `chore` from the commits it pulls in — is what release.yml acts on.
+#
+# Secret (this repo):
+#   DESKTOP_BOT_TOKEN   fine-grained PAT (or GitHub App token) on pos-desktop with
+#                       Contents: write + Pull requests: write. A PAT/App token is
+#                       needed rather than GITHUB_TOKEN because PRs and pushes made
+#                       with GITHUB_TOKEN do not start other workflow runs, so
+#                       tauri-ci would never run on the bump PR.
+#   CI_SUBMODULE_TOKEN  optional: only while a submodule repo is private.
+#
+# Manual run: Actions -> bump-submodule -> Run workflow (pick one, or `all`).
+
+on:
+  repository_dispatch:
+    types: [submodule-updated]
+  workflow_dispatch:
+    inputs:
+      submodule:
+        description: "Submodule to bump"
+        type: choice
+        options: [all, backend, frontend, document-server]
+        default: all
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    if: github.repository == 'simplebash-official/pos-desktop'
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.pick.outputs.list }}
+    steps:
+      - id: pick
+        shell: bash
+        env:
+          # Untrusted input: only ever read through the environment, and only
+          # accepted if it is exactly one of the three known names.
+          FROM_EVENT: ${{ github.event.client_payload.submodule }}
+          FROM_INPUT: ${{ inputs.submodule }}
+        run: |
+          pick="${FROM_EVENT:-${FROM_INPUT:-all}}"
+          case "$pick" in
+            all)                              list='["backend","frontend","document-server"]' ;;
+            backend|frontend|document-server) list="[\"$pick\"]" ;;
+            *) echo "::error::unknown submodule '$pick'"; exit 1 ;;
+          esac
+          echo "list=$list" >> "$GITHUB_OUTPUT"
+          echo "bumping: $list"
+
+  bump:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        submodule: ${{ fromJSON(needs.plan.outputs.list) }}
+    # The bump follows the branch tip, so a queued run for the same submodule
+    # supersedes an older queued one without losing anything.
+    concurrency:
+      group: bump-${{ matrix.submodule }}
+      cancel-in-progress: false
+    env:
+      SUB: ${{ matrix.submodule }}
+      BRANCH: bot/bump-${{ matrix.submodule }}
+      GH_TOKEN: ${{ secrets.DESKTOP_BOT_TOKEN }}
+    steps:
+      - name: Require DESKTOP_BOT_TOKEN
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::secret DESKTOP_BOT_TOKEN is not set (see .github/RELEASING.md)"; exit 1; }
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.DESKTOP_BOT_TOKEN }}
+          persist-credentials: true # needed to push the bump branch
+
+      - name: Move the pin
+        id: bump
+        env:
+          SUBMODULE_TOKEN: ${{ secrets.CI_SUBMODULE_TOKEN }}
+        run: |
+          if [ -n "${SUBMODULE_TOKEN}" ]; then
+            git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+          scripts/ci/bump-submodule.sh "$SUB"
+
+      - name: Commit and push the bump branch
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          TITLE: ${{ steps.bump.outputs.title }}
+          BODY_FILE: ${{ steps.bump.outputs.body_file }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add -- "$SUB"
+          { printf '%s\n\n' "$TITLE"; cat "$BODY_FILE"; } > "$RUNNER_TEMP/commit-msg.txt"
+          git commit -F "$RUNNER_TEMP/commit-msg.txt"
+          # The branch belongs to this bot; rebuilding it from main each time is intended.
+          git push --force origin "$BRANCH"
+
+      - name: Open or update the PR
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          TITLE: ${{ steps.bump.outputs.title }}
+          BODY_FILE: ${{ steps.bump.outputs.body_file }}
+        run: |
+          pr=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr edit "$pr" --title "$TITLE" --body-file "$BODY_FILE"
+            echo "updated PR #$pr"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file "$BODY_FILE"
+          fi
+
+      - name: Close a stale PR (pin already current)
+        if: steps.bump.outputs.changed != 'true'
+        run: |
+          pr=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            gh pr close "$pr" --delete-branch --comment "Pin on \`main\` is already at the branch tip; nothing left to bump."
+          fi

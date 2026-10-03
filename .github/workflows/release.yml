@@ -6,10 +6,13 @@ name: release
 #     (feat: -> minor, fix:/perf: -> patch, <type>! / BREAKING CHANGE -> bump;
 #      docs/chore/ci/refactor/test/build/style -> nothing) triggers a release:
 #       1. compute the next version         (scripts/ci/next-version.sh)
-#       2. pull the 3 submodules to their tracked branch tips
-#       3. bump package.json                (scripts/set-version.py)
-#       4. commit "chore(release): vX.Y.Z [skip ci]" + annotated tag, push both to main
-#       5. call desktop-build.yml to build every OS and publish the release
+#       2. bump package.json                (scripts/set-version.py)
+#       3. commit "chore(release): vX.Y.Z [skip ci]" + annotated tag, push both to main
+#       4. call desktop-build.yml to build every OS and publish the release
+#
+# The submodule pins on `main` are what ships. They are moved by reviewed PRs
+# that bump-submodule.yml opens when frontend / backend / document-server change
+# (merging one is itself a `feat`/`fix` commit here, so it releases).
 #
 #   * Nothing releasable -> the job no-ops, no build.
 #
@@ -60,26 +63,6 @@ jobs:
       - name: Compute next version from conventional commits
         id: compute
         run: scripts/ci/next-version.sh
-
-      # Takes the tip of each submodule's tracked branch, so whatever is merged
-      # there ships in a signed update to every install. Keep `master`/`main`
-      # on pos-backend, pos-frontend and document-server protected (PRs with a
-      # required review, no direct pushes) — see .github/RELEASING.md.
-      - name: Bump submodule pins to their tracked branches
-        if: steps.compute.outputs.release == 'true'
-        env:
-          # Only needed while a submodule repo is still private.
-          SUBMODULE_TOKEN: ${{ secrets.CI_SUBMODULE_TOKEN }}
-        run: |
-          if [ -n "${SUBMODULE_TOKEN}" ]; then
-            git config --global url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf "https://github.com/"
-          fi
-          git submodule sync
-          git submodule update --init --remote --depth 1 -- frontend backend document-server
-          if [ -n "${SUBMODULE_TOKEN}" ]; then
-            git config --global --unset url."https://x-access-token:${SUBMODULE_TOKEN}@github.com/".insteadOf
-          fi
-          git submodule status
 
       - name: Bump version (package.json is the single source of truth)
         if: steps.compute.outputs.release == 'true'

@@ -38,7 +38,7 @@ Rules that follow from this:
 
 - **Never make app changes inside `desktop/backend|frontend|document-server`.** Change the app in its own working copy (`pos/backend` …), commit, **push**, and only then move the pin here
   (`git submodule update --remote <name>` + commit). A pin can only point at a commit that exists on GitHub.
-- **Local-only commits never reach an installer.** The release pipeline runs `git submodule update --remote`, i.e. it takes the tip of each remote branch. Push the app repos first.
+- **Local-only commits never reach an installer.** Releases build the pins committed on `main`. Pushing an app repo makes it dispatch `submodule-updated`; `bump-submodule.yml` then opens a `bot/bump-<name>` PR here moving the pin. Merging that PR ships it. Push the app repos first.
 - **The pins go stale.** Before building or testing the desktop app by hand, run `git submodule update --remote` (then `git submodule status` to see what moved). Pure shell work in `src-tauri/`, `scripts/` or the docs does not need it.
 - The same code serves both targets; the desktop-only parts are gated with `isTauri()` on the frontend and `DATABASE_TYPE=sqlite` on the backend. Web-only parts (shop-code login, `TENANT_MODE=multi`, `/api/internal/provision`) never run inside the desktop app.
 
@@ -52,7 +52,7 @@ Desktop sign-ups send only the shop (no `posOwner`), so identity does **not** cr
 
 `.github/workflows/release.yml` runs on **every push to `main`**. It reads the Conventional Commit
 messages since the last `v*` tag and, if any are release-worthy, cuts a full desktop release
-(bump `package.json` → pull the 3 submodules to their tips → commit + tag on `main` → build
+(bump `package.json` → commit + tag on `main` → build
 macOS/Linux/Windows → publish the GitHub Release + `latest.json` on this repo).
 
 ### Commit convention (this repo)
@@ -79,8 +79,10 @@ Consequences for how you work here:
   desktop app and web deployment share the exact same version number.
 - The pipeline commits `chore(release): vX.Y.Z [skip ci]` and tags it. Don't fight that commit —
   `git pull` before starting new work.
-- **Bumping a submodule pin is not needed for a release** — the pipeline runs
-  `git submodule update --remote` itself. You only bump a pin by hand for a non-release reason.
+- **Submodule pins move through bot PRs.** A push to `pos-backend` / `pos-frontend` / `document-server`
+  triggers `bump-submodule.yml`, which opens `bot/bump-<name>` titled `feat|fix|chore(<name>): bump …`
+  (type taken from the commits it pulls in; `chore` = no release). Review and merge it; the merge is
+  the release trigger. Run it by hand: Actions → bump-submodule. Release builds use exactly the pins on `main`.
 
 ### Emergency / offline release
 
@@ -159,7 +161,7 @@ the app bundle — data under `com.simplebash.pos/` is never touched. Details: `
    - Viewer: Settings → Activity Log (desktop + admin only) via `logs_*` commands.
 
 ### Future Implementation Rules
-- **Submodule Push Invariant**: When adding features across submodules, you **MUST push the submodule commits to their remote tracking branches (`backend:master`, `frontend:main`, `document-server:main`) before merging the PR in this root compose repo**. The cloud CI pipeline pulls submodules using `git submodule update --remote`; if your changes only exist on a local detached HEAD, CI will compile a release with the stale remote code.
+- **Submodule Push Invariant**: When adding features across submodules, you **MUST push the submodule commits to their remote tracking branches (`backend:master`, `frontend:main`, `document-server:main`) before merging the PR in this root compose repo**. The bump workflow moves pins to the remote branch tip; if your changes only exist locally, the bump PR (and any release) will not contain them.
 - **Version Integrity**: Never edit versions by hand. Use Conventional Commit prefixes to let CI increment versions, or use `scripts/release.sh <ver>` for emergency offline tagging.
 - **Logging Invariant**: Anything new must be observable in the activity log — frontend features use `logger.event` (+ `data-log-id` on critical controls, `data-log-redact` on sensitive fields); backend/document-server mutating service functions wrap in `core::logging::domain::tracked`; new Tauri commands use `CommandLog`; a new sidecar is one `SIDECARS` entry that prints JSON lines on stdout. Never log secrets unredacted. Contract: `docs/logging.md`.
 - **Sidecar Port & Address Binding**: Desktop sidecars must strictly bind to loopback (`127.0.0.1`), never `0.0.0.0`, to prevent exposing internal endpoints on local networks.

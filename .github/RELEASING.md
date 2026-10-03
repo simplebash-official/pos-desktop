@@ -6,11 +6,10 @@ tag (`feat:` → minor, `fix:`/`perf:` → patch, `<type>!` / `BREAKING CHANGE` 
 bump; `docs`/`chore`/`ci`/`refactor`/`test`/`build`/`style` → nothing) it:
 
 1. computes the next version (`scripts/ci/next-version.sh`),
-2. pulls `frontend` + `backend` + `document-server` to their tracked-branch tips,
-3. bumps `package.json` (`scripts/set-version.py` — the single source of truth),
-4. commits `chore(release): vX.Y.Z [skip ci]` and tags `vX.Y.Z` on `main`
+2. bumps `package.json` (`scripts/set-version.py` — the single source of truth),
+3. commits `chore(release): vX.Y.Z [skip ci]` and tags `vX.Y.Z` on `main`
    (pushed with the default `GITHUB_TOKEN`),
-5. calls `.github/workflows/desktop-build.yml` (a reusable workflow) to build
+4. calls `.github/workflows/desktop-build.yml` (a reusable workflow) to build
    every OS and publish the GitHub Release + `latest.json` on this repo
    (`simplebash-official/pos-desktop`).
 
@@ -21,6 +20,43 @@ bump; `docs`/`chore`/`ci`/`refactor`/`test`/`build`/`style` → nothing) it:
 | `workflow_call` (from `release.yml`) | build + publish — the normal path |
 | `workflow_dispatch` | build all 3 OSes; publish only if you tick `publish` |
 | `push: tags: v*` | emergency / offline path — build + publish |
+
+## Submodule bumps (bot PRs)
+
+The releases ship the `frontend` / `backend` / `document-server` pins that are on
+`main`. Those move through reviewed PRs, not automatically:
+
+1. A push to `pos-backend` (`master`), `pos-frontend` or `document-server` (`main`)
+   runs that repo's `notify-desktop.yml`, which sends a `repository_dispatch`
+   (`submodule-updated`) to this repo.
+2. `bump-submodule.yml` moves that pin to the branch tip on `bot/bump-<name>` and
+   opens (or updates) one PR. The title is `feat|fix|chore(<name>): bump …`, typed
+   from the commits pulled in (`feat!` for breaking). `chore` (docs/ci/test only)
+   moves the pin without releasing.
+3. `tauri-ci` builds the sidecars from the new pins as the check.
+4. Merge the PR -> push to `main` -> `release.yml` as above. Squash or merge
+   commit both work; the PR title/commit carries the type.
+
+Run it by hand: Actions -> `bump-submodule` -> Run workflow (one name, or `all`).
+It is free on public repos (one short Linux job per push).
+
+Secrets for this:
+
+| Repo | Secret | Value |
+|---|---|---|
+| `pos-desktop` | `DESKTOP_BOT_TOKEN` | fine-grained PAT (or GitHub App token): **Contents: write**, **Pull requests: write** on `pos-desktop`. Must not be `GITHUB_TOKEN`, or `tauri-ci` never runs on the bump PR. |
+| `pos-backend`, `pos-frontend`, `document-server` | `DESKTOP_DISPATCH_TOKEN` | fine-grained PAT (or App token): **Contents: write** on `pos-desktop` (what `repository_dispatch` requires). The same token as above works. |
+
+```bash
+gh secret set DESKTOP_BOT_TOKEN --repo simplebash-official/pos-desktop
+for r in pos-backend pos-frontend document-server; do
+  gh secret set DESKTOP_DISPATCH_TOKEN --repo simplebash-official/$r
+done
+```
+
+If the bump PRs should merge themselves once `tauri-ci` is green, enable
+auto-merge on the repo and run `gh pr merge --auto` in the PR step with the same
+token (a merge by `GITHUB_TOKEN` would not start `release.yml`).
 
 ## Loop safety
 
@@ -50,10 +86,10 @@ Authenticode cert, wired into `desktop-build.yml`.
 
 ### 0. Branch protection — required (the repos are public)
 
-Step 2 of every release takes the **tip** of `pos-backend` `master`,
-`pos-frontend` `main` and `document-server` `main`, and the result is signed and
-pushed to every installed POS. So whatever can land on those branches can land
-on every till. On all four repos:
+Releases ship the submodule pins on `pos-desktop` `main`, which bump PRs move to
+the **tip** of `pos-backend` `master`, `pos-frontend` `main` and `document-server`
+`main`, and the result is signed and pushed to every installed POS. The PR review
+is the gate, but whatever can land on those branches can reach every till. On all four repos:
 
 > **Settings → Rules → New branch ruleset** targeting the default branch:
 > require a pull request with at least one approving review, block force

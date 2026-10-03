@@ -20,11 +20,19 @@ on:
   pull_request:
     paths:
       - "src-tauri/**"
+      # Submodule pin bumps (bump-submodule.yml) change only these gitlinks;
+      # building the sidecars from the new pins is the check on them.
+      - "backend"
+      - "frontend"
+      - "document-server"
       - ".github/workflows/tauri-ci.yml"
   push:
     branches: [main]
     paths:
       - "src-tauri/**"
+      - "backend"
+      - "frontend"
+      - "document-server"
       - ".github/workflows/tauri-ci.yml"
 
 jobs:
