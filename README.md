@@ -41,12 +41,32 @@ Download the installer for your system from the
 | Linux (x86-64) | `.AppImage` |
 
 The installers are not yet signed by Apple or Microsoft, so the first launch
-needs one extra step:
+needs one extra step.
 
-- **macOS** — after moving the app to Applications, run once in Terminal:
-  `xattr -dr com.apple.quarantine "/Applications/SimpleBash POS.app"`
-  (otherwise macOS says the app "is damaged" — it isn't).
-- **Windows** — SmartScreen shows "unknown publisher": choose **More info → Run anyway**.
+**macOS** — macOS says *"SimpleBash POS.app" is damaged and can't be opened*.
+It isn't damaged; the app just isn't notarized by Apple yet, so macOS blocks a
+browser-downloaded copy. To allow it:
+
+1. Open the `.dmg` and drag **SimpleBash POS** into **Applications**.
+2. Open **Terminal** and run:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/simplebash-official/pos-desktop/main/scripts/macos-allow-app.sh | bash
+   ```
+
+   This runs [`scripts/macos-allow-app.sh`](scripts/macos-allow-app.sh), which
+   removes the download "quarantine" flag from the app. Prefer to type it
+   yourself? The same thing is:
+
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/SimpleBash POS.app"
+   ```
+
+3. Open SimpleBash POS from Applications.
+
+You only need this once per installation — in-app updates aren't affected.
+
+**Windows** — SmartScreen shows "unknown publisher": choose **More info → Run anyway**.
 
 On first launch a setup wizard creates the shop's admin account and can load
 sample data to explore with.
@@ -68,6 +88,31 @@ Everything the app writes is kept in one folder, which updates never touch:
 
 It holds the databases, generated PDFs, logs and the app's locally generated
 secrets. Back up that whole folder, or use **Settings → Backup** inside the app.
+
+### Start fresh (delete all local data)
+
+To wipe this computer's copy and start again from the setup wizard — for
+example after testing with sample data — quit SimpleBash POS, then on macOS
+or Linux run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/simplebash-official/pos-desktop/main/scripts/reset-local-data.sh | bash
+```
+
+[`scripts/reset-local-data.sh`](scripts/reset-local-data.sh) asks you to type
+`delete` before it removes anything, refuses to run while the app is open, and
+also signs this computer out of the SimpleBash cloud. Options (add after
+`bash -s --` when using the one-liner, e.g. `… | bash -s -- --backup`):
+
+| Option | Effect |
+|---|---|
+| `--backup` | Copy the data to a `com.simplebash.pos.bak-<date>` folder first |
+| `--keep-cloud-login` | Keep the cloud sign-in saved in the keychain |
+| `--yes` | Skip the confirmation (for scripts) |
+
+**This permanently deletes every sale, invoice, customer and product on this
+computer.** Data already synced to the SimpleBash cloud is not touched. On
+Windows, quit the app and delete the `%APPDATA%\com.simplebash.pos` folder.
 
 ### Optional: cloud account and sync
 

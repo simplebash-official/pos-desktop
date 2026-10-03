@@ -249,10 +249,11 @@ jobs:
 
           **macOS** — after moving the app to Applications, run once in Terminal:
           ```
-          xattr -dr com.apple.quarantine "/Applications/SimpleBash POS.app"
+          curl -fsSL https://raw.githubusercontent.com/simplebash-official/pos-desktop/main/scripts/macos-allow-app.sh | bash
           ```
-          then open it. (Without this, macOS says the app "is damaged" — it isn't;
-          the app just isn't Apple-notarized yet.)
+          (or `xattr -dr com.apple.quarantine "/Applications/SimpleBash POS.app"`),
+          then open it. Without this, macOS says the app "is damaged" — it isn't;
+          the app just isn't Apple-notarized yet.
 
           **Windows** — SmartScreen shows "unknown publisher" → **More info → Run anyway**.
 
