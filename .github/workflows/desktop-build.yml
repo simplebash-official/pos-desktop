@@ -172,6 +172,11 @@ jobs:
 
       - name: Build frontend (no signing secrets in this step)
         run: npm --prefix frontend run build:tauri
+        env:
+          # Where the shell starts the backend. Set explicitly so the build
+          # never depends on an untracked frontend/.env.tauri (v0.8.0 shipped
+          # without it and every API call hit the app's own HTML instead).
+          VITE_API_BASE_URL: http://127.0.0.1:8080/api
 
       - name: Build desktop bundle (and sign updater artifacts)
         # Sidecars and frontend were built above; `beforeBuildCommand: null`
