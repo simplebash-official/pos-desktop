@@ -32,7 +32,16 @@ for arg in "$@"; do
     --backup | -b) BACKUP=1 ;;
     --keep-cloud-login) KEEP_CLOUD_LOGIN=1 ;;
     -h | --help)
-      sed -n '2,20p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//'
+      # Inline (not read back from this file) so it also works via curl | bash.
+      cat <<'USAGE'
+Wipes ALL local data of the SimpleBash POS desktop app (macOS and Linux), so
+the next launch is a fresh install. Quit the app first.
+
+Options:
+  --backup            copy the data to a .bak-<time> folder first
+  --keep-cloud-login  keep the cloud sign-in saved in the keychain
+  --yes               skip the confirmation prompt
+USAGE
       exit 0
       ;;
     *)
