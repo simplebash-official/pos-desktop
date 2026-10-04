@@ -293,6 +293,18 @@ impl Agent {
     async fn first_sync(&self, state: &LocalState) -> Result<bool, SyncError> {
         let cloud = self.cloud.status().await?;
         if cloud.server_seq == 0 {
+            // A shop created on the web has its owner's POS admin in the cloud
+            // tables but no change history yet. A brand-new install that has not
+            // been set up (nothing local to lose) joins it by downloading that,
+            // instead of uploading an empty database and asking for a second admin.
+            if !state.local_has_data
+                && self.local.outbox(0, 1).await?.items.is_empty()
+                && !self.local.setup_completed().await?
+                && !self.cloud.snapshot(None).await?.changes.is_empty()
+            {
+                self.bootstrap().await?;
+                return Ok(true);
+            }
             // First device of the shop: upload what exists.
             self.local.seed().await?;
             return Ok(true);
@@ -828,6 +840,103 @@ mod tests {
 
         f.agent.cycle().await.unwrap();
         // `expect(1)` is verified when the mock server drops.
+    }
+
+    /// A fresh install, a web-created shop that has never synced (`serverSeq` 0).
+    async fn fresh_install_joining_a_never_synced_shop(
+        setup_completed: bool,
+        snapshot_changes: Value,
+    ) -> Fixture {
+        let f = fixture().await;
+        mount_quiet_cloud(&f).await;
+        let mut empty = state(0, 0);
+        empty["localHasData"] = json!(false);
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(empty))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/status"))
+            .respond_with(ok(json!({ "serverSeq": 0, "compactedThroughSeq": 0 })))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/system/setup-status"))
+            .respond_with(ok(json!({ "setupCompleted": setup_completed })))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/snapshot"))
+            .respond_with(ok(
+                json!({ "asOfSeq": 0, "changes": snapshot_changes, "nextPage": null }),
+            ))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/apply"))
+            .respond_with(ok(json!({ "applied": 1, "cursor": 0 })))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/outbox/seed"))
+            .respond_with(ok(json!({})))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(outbox(&[])))
+            .mount(&f.local)
+            .await;
+        f
+    }
+
+    #[tokio::test]
+    async fn fresh_install_downloads_a_web_created_shop_instead_of_uploading_nothing() {
+        let f = fresh_install_joining_a_never_synced_shop(
+            false,
+            json!([{ "resource": "users", "key": "usr_owner" }]),
+        )
+        .await;
+
+        f.agent.cycle().await.unwrap();
+
+        let applies = body_of(&f.local, "/api/sync/apply").await;
+        assert_eq!(applies[0]["mode"], "bootstrap");
+        assert_eq!(applies[0]["changes"][0]["key"], "usr_owner");
+        assert!(body_of(&f.local, "/api/sync/outbox/seed").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_install_that_is_already_set_up_still_seeds_a_never_synced_shop() {
+        let f = fresh_install_joining_a_never_synced_shop(
+            true,
+            json!([{ "resource": "users", "key": "usr_owner" }]),
+        )
+        .await;
+
+        f.agent.cycle().await.unwrap();
+
+        // The follow-up pull may post an empty incremental page; never a bootstrap.
+        assert!(body_of(&f.local, "/api/sync/apply")
+            .await
+            .iter()
+            .all(|b| b["mode"] != "bootstrap"));
+        assert_eq!(body_of(&f.local, "/api/sync/outbox/seed").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_never_synced_shop_with_nothing_in_it_is_seeded_not_downloaded() {
+        let f = fresh_install_joining_a_never_synced_shop(false, json!([])).await;
+
+        f.agent.cycle().await.unwrap();
+
+        // The follow-up pull may post an empty incremental page; never a bootstrap.
+        assert!(body_of(&f.local, "/api/sync/apply")
+            .await
+            .iter()
+            .all(|b| b["mode"] != "bootstrap"));
+        assert_eq!(body_of(&f.local, "/api/sync/outbox/seed").await.len(), 1);
     }
 
     #[tokio::test]

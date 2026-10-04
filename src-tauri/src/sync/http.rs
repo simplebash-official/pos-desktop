@@ -215,6 +215,18 @@ impl LocalApi {
             .map_err(|e| SyncError::new(ErrorKind::Local, "BAD_RESPONSE", e.to_string(), 0))
     }
 
+    /// Whether the local POS has finished its first-run setup (its admin exists).
+    /// A fresh install that is still waiting at the wizard answers `false`.
+    pub async fn setup_completed(&self) -> Result<bool, SyncError> {
+        let value = self
+            .call(Method::GET, "/api/system/setup-status", &[], None)
+            .await?;
+        Ok(value
+            .get("setupCompleted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
+    }
+
     pub async fn state(&self) -> Result<LocalState, SyncError> {
         self.typed(Method::GET, "/api/sync/state", &[], None).await
     }
