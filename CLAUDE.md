@@ -36,6 +36,7 @@ The workspace has **two checkouts of the same backend/frontend/document-server r
 
 Rules that follow from this:
 
+- **Keep the two checkouts level.** Before any task, compare each working copy with its pin (`git -C pos/<name> fetch ../desktop/<name>` then `git log HEAD..FETCH_HEAD` and `FETCH_HEAD..HEAD`), merge whatever the other side has, and only then build or run the app. The full routine, and the local Docker URLs for dev runs, are in each app repo's CLAUDE.md under "Keep the two checkouts in sync".
 - **Never make app changes inside `desktop/backend|frontend|document-server`.** Change the app in its own working copy (`pos/backend` …), commit, **push**, and only then move the pin here
   (`git submodule update --remote <name>` + commit). A pin can only point at a commit that exists on GitHub.
 - **Local-only commits never reach an installer.** Releases build the pins committed on `main`. Pushing an app repo makes it dispatch `submodule-updated`; `bump-submodule.yml` then opens a `bot/bump-<name>` PR here moving the pin. Merging that PR ships it. Push the app repos first.
@@ -165,6 +166,7 @@ the app bundle — data under `com.simplebash.pos/` is never touched. Details: `
 - **Version Integrity**: Never edit versions by hand. Use Conventional Commit prefixes to let CI increment versions, or use `scripts/release.sh <ver>` for emergency offline tagging.
 - **Logging Invariant**: Anything new must be observable in the activity log — frontend features use `logger.event` (+ `data-log-id` on critical controls, `data-log-redact` on sensitive fields); backend/document-server mutating service functions wrap in `core::logging::domain::tracked`; new Tauri commands use `CommandLog`; a new sidecar is one `SIDECARS` entry that prints JSON lines on stdout. Never log secrets unredacted. Contract: `docs/logging.md`.
 - **Sidecar Port & Address Binding**: Desktop sidecars must strictly bind to loopback (`127.0.0.1`), never `0.0.0.0`, to prevent exposing internal endpoints on local networks.
+  Another program on `:8080` (for example the Docker POS backend from `docker-compose.local.yml`, which listens on every address) can answer before the sidecar binds, including the startup health check. The log then shows `sidecar/port_busy`. The sync agent talks to the local backend through a non-pooled, no-proxy client (`local_client` in `src-tauri/src/sync/mod.rs`) so it never stays glued to the wrong program; keep it that way. Reach the Docker POS API at `http://localhost:8081`, not `:8080`.
 
 ### How Agents Can Help
 - **Release Verification**:

@@ -21,6 +21,65 @@ pub enum SyncPhase {
     Paused,
 }
 
+/// What the agent is doing right now, in finer detail than `SyncPhase`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncStep {
+    Idle,
+    Preparing,
+    Uploading,
+    Downloading,
+    Finishing,
+}
+
+/// Progress of the current step. `total` is 0 when it is not known up front
+/// (downloads), so the UI shows a count instead of a bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SyncProgress {
+    pub done: u64,
+    pub total: u64,
+}
+
+/// Waiting / conflicting changes for one resource, straight from the local backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleStatus {
+    pub resource: String,
+    pub pending: u64,
+    pub conflicts: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CycleSummary {
+    pub at: String,
+    pub sent: u64,
+    pub received: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HistoryKind {
+    Synced,
+    Offline,
+    Online,
+    Error,
+    Paused,
+    Resumed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntry {
+    pub at: String,
+    pub kind: HistoryKind,
+    pub sent: u64,
+    pub received: u64,
+    pub message: Option<String>,
+}
+
+pub const HISTORY_LIMIT: usize = 20;
+
 /// Payload of the `sync://status` event and of `sync_get_status`. Contains
 /// counters and timestamps only - never a record body or a token.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -38,6 +97,14 @@ pub struct SyncStatus {
     /// device joined a shop that already has data): nothing is wiped until the
     /// user confirms via `sync_bootstrap`.
     pub bootstrap_required: bool,
+    pub step: SyncStep,
+    pub progress: Option<SyncProgress>,
+    pub modules: Vec<ModuleStatus>,
+    pub last_cycle: Option<CycleSummary>,
+    /// When the agent will next try on its own (RFC 3339).
+    pub next_retry_at: Option<String>,
+    /// Newest first, at most `HISTORY_LIMIT`.
+    pub history: Vec<HistoryEntry>,
 }
 
 impl Default for SyncStatus {
@@ -50,6 +117,12 @@ impl Default for SyncStatus {
             conflicts_open: 0,
             last_error: None,
             bootstrap_required: false,
+            step: SyncStep::Idle,
+            progress: None,
+            modules: Vec::new(),
+            last_cycle: None,
+            next_retry_at: None,
+            history: Vec::new(),
         }
     }
 }
@@ -103,17 +176,90 @@ impl SyncControl {
 
     pub fn pause(&self) {
         self.paused.store(true, Ordering::SeqCst);
+        let was = self.snapshot().state;
         self.update(|s| s.state = SyncPhase::Paused);
+        if was != SyncPhase::Paused {
+            self.push_history(HistoryKind::Paused, 0, 0, None);
+        }
     }
 
     pub fn resume(&self) {
         self.paused.store(false, Ordering::SeqCst);
+        let was_paused = self.snapshot().state == SyncPhase::Paused;
         self.update(|s| {
             if s.state == SyncPhase::Paused {
                 s.state = SyncPhase::Idle;
             }
         });
+        if was_paused {
+            self.push_history(HistoryKind::Resumed, 0, 0, None);
+        }
         self.wake.notify_one();
+    }
+
+    /// Moves to a new step of the cycle; progress resets with it.
+    pub fn set_step(&self, step: SyncStep, total: u64) {
+        self.update(|s| {
+            s.step = step;
+            s.progress = match step {
+                SyncStep::Uploading | SyncStep::Downloading => {
+                    Some(SyncProgress { done: 0, total })
+                }
+                _ => None,
+            };
+        });
+    }
+
+    pub fn set_progress(&self, done: u64) {
+        self.update(|s| {
+            if let Some(p) = s.progress.as_mut() {
+                p.done = done;
+                if p.total > 0 && p.done > p.total {
+                    p.total = p.done;
+                }
+            }
+        });
+    }
+
+    pub fn set_next_retry(&self, after: Option<Duration>) {
+        self.update(|s| {
+            s.next_retry_at = after.map(|d| {
+                (chrono::Utc::now() + chrono::Duration::milliseconds(d.as_millis() as i64))
+                    .to_rfc3339()
+            });
+        });
+    }
+
+    /// Adds a line to the activity list (newest first, bounded). Identical
+    /// consecutive offline / error lines are collapsed so a long outage is one line.
+    pub fn push_history(
+        &self,
+        kind: HistoryKind,
+        sent: u64,
+        received: u64,
+        message: Option<String>,
+    ) {
+        self.update(|s| {
+            if matches!(kind, HistoryKind::Offline | HistoryKind::Error)
+                && s.history
+                    .first()
+                    .map(|h| h.kind == kind && h.message == message)
+                    .unwrap_or(false)
+            {
+                return;
+            }
+            s.history.insert(
+                0,
+                HistoryEntry {
+                    at: chrono::Utc::now().to_rfc3339(),
+                    kind,
+                    sent,
+                    received,
+                    message,
+                },
+            );
+            s.history.truncate(HISTORY_LIMIT);
+        });
     }
 
     /// `sync_now`: cut the current wait short.
@@ -218,6 +364,44 @@ mod tests {
         ctl.confirm_bootstrap();
         assert!(ctl.take_bootstrap_confirmed());
         assert!(!ctl.take_bootstrap_confirmed());
+    }
+
+    #[test]
+    fn history_is_newest_first_bounded_and_collapses_repeats() {
+        let ctl = SyncControl::new(Arc::new(Recorder::default()));
+        for i in 0..30 {
+            ctl.push_history(HistoryKind::Synced, i, 0, None);
+        }
+        let h = ctl.snapshot().history;
+        assert_eq!(h.len(), HISTORY_LIMIT);
+        assert_eq!(h[0].sent, 29);
+        ctl.push_history(HistoryKind::Offline, 0, 0, None);
+        ctl.push_history(HistoryKind::Offline, 0, 0, None);
+        assert_eq!(ctl.snapshot().history[0].kind, HistoryKind::Offline);
+        assert_eq!(ctl.snapshot().history[1].kind, HistoryKind::Synced);
+    }
+
+    #[test]
+    fn progress_only_exists_for_uploads_and_downloads() {
+        let ctl = SyncControl::new(Arc::new(Recorder::default()));
+        ctl.set_step(SyncStep::Uploading, 10);
+        ctl.set_progress(4);
+        assert_eq!(
+            ctl.snapshot().progress,
+            Some(SyncProgress { done: 4, total: 10 })
+        );
+        ctl.set_step(SyncStep::Finishing, 0);
+        assert_eq!(ctl.snapshot().progress, None);
+    }
+
+    #[test]
+    fn pause_and_resume_leave_history_lines() {
+        let ctl = SyncControl::new(Arc::new(Recorder::default()));
+        ctl.pause();
+        ctl.pause();
+        ctl.resume();
+        let kinds: Vec<_> = ctl.snapshot().history.iter().map(|h| h.kind).collect();
+        assert_eq!(kinds, vec![HistoryKind::Resumed, HistoryKind::Paused]);
     }
 
     #[tokio::test]

@@ -89,6 +89,14 @@ pub struct BlockInfo {
     pub block_size: u64,
 }
 
+/// Rows per resource, as grouped by the local backend.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ResourceCount {
+    pub resource: String,
+    pub count: u64,
+}
+
 /// `GET /api/sync/state` (see the contract at the top of `sync/mod.rs`).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -104,6 +112,8 @@ pub struct LocalState {
     /// True when the local database holds business data (invoices etc.).
     pub local_has_data: bool,
     pub number_blocks: Vec<BlockInfo>,
+    pub pending_by_resource: Vec<ResourceCount>,
+    pub conflicts_by_resource: Vec<ResourceCount>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -314,6 +324,16 @@ impl LocalApi {
 
     pub async fn apply(&self, body: &Value) -> Result<ApplyResult, SyncError> {
         self.typed(Method::POST, "/api/sync/apply", &[], Some(body))
+            .await
+    }
+
+    /// Changes still waiting to upload, with readable names (for the Sync screen).
+    pub async fn pending(&self, resource: Option<&str>, limit: usize) -> Result<Value, SyncError> {
+        let mut query = vec![("limit", limit.to_string())];
+        if let Some(r) = resource {
+            query.push(("resource", r.to_string()));
+        }
+        self.typed(Method::GET, "/api/sync/outbox/pending", &query, None)
             .await
     }
 

@@ -635,6 +635,21 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
     };
 
     for spec in SIDECARS {
+        // Something else on this port (a Docker backend on :8080, say) would also answer
+        // the health check below, so say so in the log. Never block startup over it.
+        if tokio::net::TcpStream::connect((LOOPBACK, spec.port))
+            .await
+            .is_ok()
+        {
+            LogEvent::shell("sidecar", "port_busy")
+                .level(Level::Warn)
+                .msg(format!(
+                    "another program already answers on {LOOPBACK}:{}",
+                    spec.port
+                ))
+                .data(json!({ "sidecar": spec.bin, "port": spec.port }))
+                .emit();
+        }
         let child = spawn_sidecar(&app, spec, &ctx)?;
         app.state::<Sidecars>().push(spec.bin, child);
         wait_healthy(

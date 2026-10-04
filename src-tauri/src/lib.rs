@@ -231,6 +231,7 @@ pub fn run() {
             sync::sync_pause,
             sync::sync_resume,
             sync::sync_list_conflicts,
+            sync::sync_list_pending,
             sync::sync_resolve_conflict,
             sync::sync_bootstrap,
             benchmark::get_system_specs,

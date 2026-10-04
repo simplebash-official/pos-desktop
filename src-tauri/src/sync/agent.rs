@@ -20,9 +20,12 @@ use serde_json::{json, Value};
 use crate::logging::{Level, LogEvent};
 
 use super::http::{BlockInfo, CloudSyncApi, ErrorKind, LocalApi, LocalState, SyncError};
-use super::state::{SyncControl, SyncPhase};
+use super::state::{CycleSummary, HistoryKind, ModuleStatus, SyncControl, SyncPhase, SyncStep};
 
-pub const PUSH_PAGE: usize = 200;
+/// Changes per upload request. Small on purpose: the cloud applies a batch one
+/// change at a time, so a big batch can outlast the request timeout, and the
+/// progress bar only moves when a batch is confirmed.
+pub const PUSH_PAGE: usize = 25;
 pub const PULL_PAGE: usize = 200;
 /// Pause between cycles when everything is quiet.
 pub const IDLE_INTERVAL: Duration = Duration::from_secs(15);
@@ -167,7 +170,38 @@ pub struct CycleReport {
     pub pushed: usize,
     pub pulled: usize,
     pub blocks_reserved: usize,
+    pub refused: usize,
     pub bootstrap_required: bool,
+}
+
+/// Groups the backend's per-resource counts into one row per resource.
+fn modules_from(state: &LocalState) -> Vec<ModuleStatus> {
+    let mut rows: Vec<ModuleStatus> = Vec::new();
+    for (list, is_pending) in [
+        (&state.pending_by_resource, true),
+        (&state.conflicts_by_resource, false),
+    ] {
+        for item in list {
+            let row = match rows.iter().position(|r| r.resource == item.resource) {
+                Some(i) => &mut rows[i],
+                None => {
+                    rows.push(ModuleStatus {
+                        resource: item.resource.clone(),
+                        pending: 0,
+                        conflicts: 0,
+                    });
+                    rows.last_mut().expect("just pushed")
+                }
+            };
+            if is_pending {
+                row.pending = item.count;
+            } else {
+                row.conflicts = item.count;
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.resource.cmp(&b.resource));
+    rows
 }
 
 pub struct Agent {
@@ -220,7 +254,9 @@ impl Agent {
             if s.state != SyncPhase::Paused {
                 s.state = SyncPhase::Syncing;
             }
+            s.next_retry_at = None;
         });
+        self.ctl.set_step(SyncStep::Preparing, 0);
 
         let mut state = self.local.state().await?;
         if !state.linked || !state.capture_enabled {
@@ -244,7 +280,8 @@ impl Agent {
         }
         let state = self.local.state().await?;
 
-        report.pushed = self.push_all(&state).await?;
+        (report.pushed, report.refused) = self.push_all(&state).await?;
+        self.ctl.set_step(SyncStep::Downloading, 0);
         match self.pull_all(state.cloud_cursor).await {
             Ok(n) => report.pulled = n,
             Err(e) if e.kind == ErrorKind::CursorExpired => {
@@ -256,11 +293,21 @@ impl Agent {
             }
             Err(e) => return Err(e),
         }
+        self.ctl.set_step(SyncStep::Finishing, 0);
         report.blocks_reserved = self.top_up_blocks(&state).await?;
         self.sync_setup_flag().await;
 
         let fresh = self.local.state().await.unwrap_or(state);
+        let finished_at = chrono::Utc::now().to_rfc3339();
         self.ctl.update(|s| {
+            s.step = SyncStep::Idle;
+            s.progress = None;
+            s.modules = modules_from(&fresh);
+            s.last_cycle = Some(CycleSummary {
+                at: finished_at.clone(),
+                sent: report.pushed as u64,
+                received: report.pulled as u64,
+            });
             s.state = if self.ctl.is_paused() {
                 SyncPhase::Paused
             } else {
@@ -271,6 +318,21 @@ impl Agent {
             s.pending_out = fresh.pending_out;
             s.conflicts_open = fresh.conflicts_open;
         });
+        // Quiet cycles stay out of the activity list; only ones that moved data show.
+        if report.pushed > 0 || report.pulled > 0 || report.refused > 0 {
+            let message = (report.refused > 0).then(|| {
+                format!(
+                    "{} change(s) were refused. See Sync Conflicts.",
+                    report.refused
+                )
+            });
+            self.ctl.push_history(
+                HistoryKind::Synced,
+                report.pushed as u64,
+                report.pulled as u64,
+                message,
+            );
+        }
         LogEvent::shell("sync", "cycle.done")
             .level(Level::Debug)
             .data(json!({
@@ -391,9 +453,11 @@ impl Agent {
         Ok(())
     }
 
-    async fn push_all(&self, state: &LocalState) -> Result<usize, SyncError> {
+    async fn push_all(&self, state: &LocalState) -> Result<(usize, usize), SyncError> {
         let mut after = state.last_pushed_outbox_seq;
         let mut total = 0;
+        let mut refused_total = 0;
+        self.ctl.set_step(SyncStep::Uploading, state.pending_out);
         loop {
             let page = self.local.outbox(after, PUSH_PAGE).await?;
             let (Some(first), Some(last)) = (page.items.first(), page.items.last()) else {
@@ -410,7 +474,12 @@ impl Agent {
                 "changes": page.items.iter().map(|i| &i.record).collect::<Vec<_>>(),
                 "outboxSeqs": page.items.iter().map(|i| i.seq).collect::<Vec<_>>(),
             });
+            let started = Instant::now();
             let result = self.cloud.push(&body).await?;
+            LogEvent::shell("sync", "push.page")
+                .level(Level::Debug)
+                .data(json!({ "count": count, "ms": started.elapsed().as_millis() as u64 }))
+                .emit();
             // Only now that the cloud confirmed does the outbox shrink.
             self.local.ack(last_seq).await?;
             let refused = result
@@ -431,11 +500,13 @@ impl Agent {
             }
             after = last_seq;
             total += count;
+            refused_total += refused;
+            self.ctl.set_progress(total as u64);
             if count < PUSH_PAGE {
                 break;
             }
         }
-        Ok(total)
+        Ok((total, refused_total))
     }
 
     async fn pull_all(&self, cursor: i64) -> Result<usize, SyncError> {
@@ -455,6 +526,7 @@ impl Agent {
             });
             self.local.apply(&body).await?;
             pulled += count;
+            self.ctl.set_progress(pulled as u64);
             cursor = advance;
             if !page.has_more {
                 break;
@@ -600,6 +672,8 @@ mod tests {
             "cloudCursor": cursor, "lastPushedOutboxSeq": pushed, "clockOffsetMs": 0,
             "pendingOut": 0, "conflictsOpen": 2, "localHasData": true,
             "numberBlocks": [ { "name": "invoice", "remaining": 90, "blockSize": 100 } ],
+            "pendingByResource": [ { "resource": "invoices", "count": 2 } ],
+            "conflictsByResource": [ { "resource": "products", "count": 2 } ],
         })
     }
 
@@ -705,6 +779,102 @@ mod tests {
             .unwrap()
             .iter()
             .any(|s| s.state == SyncPhase::Syncing));
+
+        // The webview can follow the cycle: preparing, uploading with a total, then downloading.
+        let steps: Vec<_> = f
+            .rec
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.step)
+            .collect();
+        let pos = |x| steps.iter().position(|s| *s == x).unwrap();
+        assert!(pos(SyncStep::Preparing) < pos(SyncStep::Uploading));
+        assert!(pos(SyncStep::Uploading) < pos(SyncStep::Downloading));
+        assert_eq!(status.step, SyncStep::Idle);
+        assert_eq!(status.progress, None);
+
+        // The activity list and per-module rows are filled after the cycle.
+        assert_eq!(status.history[0].kind, HistoryKind::Synced);
+        assert_eq!(status.history[0].sent, 2);
+        assert_eq!(status.last_cycle.as_ref().unwrap().sent, 2);
+        let modules: Vec<_> = status
+            .modules
+            .iter()
+            .map(|m| (m.resource.as_str(), m.pending, m.conflicts))
+            .collect();
+        assert_eq!(modules, vec![("invoices", 2, 0), ("products", 0, 2)]);
+    }
+
+    #[tokio::test]
+    async fn a_big_outbox_goes_up_in_small_confirmed_batches_with_live_progress() {
+        let f = fixture().await;
+        mount_quiet_cloud(&f).await;
+        let mut waiting = state(5, 3);
+        waiting["pendingOut"] = json!(27);
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(waiting))
+            .mount(&f.local)
+            .await;
+        let first: Vec<i64> = (4..4 + PUSH_PAGE as i64).collect();
+        let last_of_first = *first.last().unwrap();
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .and(query_param("after", "3"))
+            .and(query_param("limit", PUSH_PAGE.to_string()))
+            .respond_with(ok(outbox(&first)))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .and(query_param("after", last_of_first.to_string()))
+            .respond_with(ok(outbox(&[last_of_first + 1, last_of_first + 2])))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/push"))
+            .respond_with(ok(json!({ "acks": [], "serverSeq": 9 })))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/outbox/ack"))
+            .respond_with(ok(json!({})))
+            .mount(&f.local)
+            .await;
+
+        let report = f.agent.cycle().await.unwrap();
+        assert_eq!(report.pushed, PUSH_PAGE + 2);
+
+        // Two requests, each confirmed before the outbox shrinks.
+        let pushes = body_of(&f.cloud, "/api/sync/push").await;
+        assert_eq!(pushes.len(), 2);
+        assert_eq!(pushes[0]["changes"].as_array().unwrap().len(), PUSH_PAGE);
+        assert_eq!(
+            pushes[1]["outboxSeqs"],
+            json!([last_of_first + 1, last_of_first + 2])
+        );
+        let acks: Vec<i64> = body_of(&f.local, "/api/sync/outbox/ack")
+            .await
+            .iter()
+            .map(|b| b["upToSeq"].as_i64().unwrap())
+            .collect();
+        assert_eq!(acks, vec![last_of_first, last_of_first + 2]);
+
+        // The webview sees the bar move after every confirmed batch, not just at the end.
+        let done: Vec<u64> = f
+            .rec
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.step == SyncStep::Uploading)
+            .filter_map(|s| s.progress.map(|p| p.done))
+            .collect();
+        assert!(done.windows(2).all(|w| w[0] <= w[1]), "{done:?}");
+        assert!(done.contains(&(PUSH_PAGE as u64)), "{done:?}");
+        assert_eq!(done.last().copied(), Some(PUSH_PAGE as u64 + 2));
     }
 
     #[tokio::test]
