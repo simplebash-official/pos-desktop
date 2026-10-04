@@ -180,6 +180,8 @@ pub struct Agent {
     pub device_name: String,
     pub app_version: String,
     registered: AtomicBool,
+    /// The cloud already knows this shop is set up (nothing left to tell it).
+    cloud_setup_marked: AtomicBool,
     last_block_check: Mutex<Option<Instant>>,
 }
 
@@ -205,6 +207,7 @@ impl Agent {
             device_name,
             app_version,
             registered: AtomicBool::new(false),
+            cloud_setup_marked: AtomicBool::new(false),
             last_block_check: Mutex::new(None),
         }
     }
@@ -254,6 +257,7 @@ impl Agent {
             Err(e) => return Err(e),
         }
         report.blocks_reserved = self.top_up_blocks(&state).await?;
+        self.sync_setup_flag().await;
 
         let fresh = self.local.state().await.unwrap_or(state);
         self.ctl.update(|s| {
@@ -276,6 +280,37 @@ impl Agent {
             }))
             .emit();
         Ok(report)
+    }
+
+    /// Once this device has finished the shop's first-time setup, tells the cloud
+    /// so the website's POS does not ask the same demo-vs-clean question again.
+    /// Best effort: a failure is logged and retried on a later cycle; the cloud
+    /// never lets this un-set a shop that is already set up.
+    async fn sync_setup_flag(&self) {
+        if self.cloud_setup_marked.load(Ordering::SeqCst) {
+            return;
+        }
+        let outcome: Result<bool, SyncError> = async {
+            let local = self.local.setup_status().await?;
+            if !local.setup_completed {
+                return Ok(false);
+            }
+            if !self.cloud.status().await?.setup_completed {
+                self.cloud
+                    .mark_setup_complete(local.sample_data_loaded)
+                    .await?;
+            }
+            Ok(true)
+        }
+        .await;
+        match outcome {
+            Ok(true) => self.cloud_setup_marked.store(true, Ordering::SeqCst),
+            Ok(false) => {}
+            Err(e) => LogEvent::shell("sync", "setup_flag.failed")
+                .level(Level::Warn)
+                .data(json!({ "code": e.code }))
+                .emit(),
+        }
     }
 
     async fn sync_clock(&self, state: &LocalState) -> Result<(), SyncError> {
@@ -327,6 +362,9 @@ impl Agent {
     /// the user confirmed). Pages go to the local backend one by one; the last
     /// one carries the snapshot's sequence as the new cursor.
     pub async fn bootstrap(&self) -> Result<(), SyncError> {
+        // The final page tells the local backend whether the cloud shop is already
+        // set up, so a freshly created shop still gets its demo-vs-clean choice.
+        let cloud = self.cloud.status().await?;
         let mut page: Option<String> = None;
         let mut first = true;
         let mut as_of: Option<i64> = None;
@@ -339,6 +377,8 @@ impl Agent {
                 "mode": if first { "bootstrap" } else { "incremental" },
                 "changes": changes,
                 "advanceCursorTo": if last { Some(as_of_seq) } else { None },
+                "setupCompleted": if last { Some(cloud.setup_completed) } else { None },
+                "sampleDataLoaded": if last { Some(cloud.sample_data_loaded) } else { None },
             });
             self.local.apply(&body).await?;
             first = false;
@@ -846,6 +886,7 @@ mod tests {
     async fn fresh_install_joining_a_never_synced_shop(
         setup_completed: bool,
         snapshot_changes: Value,
+        cloud_flags: Value,
     ) -> Fixture {
         let f = fixture().await;
         mount_quiet_cloud(&f).await;
@@ -858,7 +899,11 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/sync/status"))
-            .respond_with(ok(json!({ "serverSeq": 0, "compactedThroughSeq": 0 })))
+            .respond_with(ok(json!({
+                "serverSeq": 0, "compactedThroughSeq": 0,
+                "setupCompleted": cloud_flags["setupCompleted"].as_bool().unwrap_or(false),
+                "sampleDataLoaded": cloud_flags["sampleDataLoaded"].as_bool().unwrap_or(false),
+            })))
             .mount(&f.cloud)
             .await;
         Mock::given(method("GET"))
@@ -896,6 +941,7 @@ mod tests {
         let f = fresh_install_joining_a_never_synced_shop(
             false,
             json!([{ "resource": "users", "key": "usr_owner" }]),
+            json!({}),
         )
         .await;
 
@@ -912,6 +958,7 @@ mod tests {
         let f = fresh_install_joining_a_never_synced_shop(
             true,
             json!([{ "resource": "users", "key": "usr_owner" }]),
+            json!({}),
         )
         .await;
 
@@ -927,7 +974,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_never_synced_shop_with_nothing_in_it_is_seeded_not_downloaded() {
-        let f = fresh_install_joining_a_never_synced_shop(false, json!([])).await;
+        let f = fresh_install_joining_a_never_synced_shop(false, json!([]), json!({})).await;
 
         f.agent.cycle().await.unwrap();
 
@@ -937,6 +984,142 @@ mod tests {
             .iter()
             .all(|b| b["mode"] != "bootstrap"));
         assert_eq!(body_of(&f.local, "/api/sync/outbox/seed").await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_final_download_page_carries_whether_the_cloud_shop_is_set_up() {
+        for (setup, sample) in [(true, true), (false, false)] {
+            let f = fresh_install_joining_a_never_synced_shop(
+                false,
+                json!([{ "resource": "users", "key": "usr_owner" }]),
+                json!({ "setupCompleted": setup, "sampleDataLoaded": sample }),
+            )
+            .await;
+
+            f.agent.cycle().await.unwrap();
+
+            let applies = body_of(&f.local, "/api/sync/apply").await;
+            let last = applies
+                .iter()
+                .find(|b| b["mode"] == "bootstrap")
+                .expect("a bootstrap page");
+            assert_eq!(last["setupCompleted"], setup);
+            assert_eq!(last["sampleDataLoaded"], sample);
+        }
+    }
+
+    /// A linked device mid-life (cursor > 0), so no first sync runs.
+    async fn linked_device_with_setup(local_setup: Value, cloud_setup: bool) -> Fixture {
+        let f = fixture().await;
+        mount_quiet_cloud(&f).await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(state(5, 3)))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(outbox(&[])))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/system/setup-status"))
+            .respond_with(ok(local_setup))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/status"))
+            .respond_with(ok(json!({ "setupCompleted": cloud_setup })))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/setup-complete"))
+            .respond_with(ok(json!({ "setupCompleted": true, "changed": true })))
+            .mount(&f.cloud)
+            .await;
+        f
+    }
+
+    #[tokio::test]
+    async fn finishing_setup_here_tells_the_cloud_exactly_once() {
+        let f = linked_device_with_setup(
+            json!({ "setupCompleted": true, "sampleDataLoaded": true }),
+            false,
+        )
+        .await;
+
+        f.agent.cycle().await.unwrap();
+        f.agent.cycle().await.unwrap();
+
+        let told = body_of(&f.cloud, "/api/sync/setup-complete").await;
+        assert_eq!(told.len(), 1, "the second cycle has nothing left to tell");
+        assert_eq!(told[0]["sampleDataLoaded"], true);
+    }
+
+    #[tokio::test]
+    async fn a_cloud_shop_that_is_already_set_up_is_not_told_again() {
+        let f = linked_device_with_setup(
+            json!({ "setupCompleted": true, "sampleDataLoaded": false }),
+            true,
+        )
+        .await;
+
+        f.agent.cycle().await.unwrap();
+
+        assert!(body_of(&f.cloud, "/api/sync/setup-complete")
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_device_still_at_the_wizard_does_not_tell_the_cloud_anything() {
+        let f = linked_device_with_setup(
+            json!({ "setupCompleted": false, "sampleDataLoaded": false }),
+            false,
+        )
+        .await;
+
+        f.agent.cycle().await.unwrap();
+
+        assert!(body_of(&f.cloud, "/api/sync/setup-complete")
+            .await
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn failing_to_tell_the_cloud_never_fails_the_sync_and_is_retried_later() {
+        let f = linked_device_with_setup(
+            json!({ "setupCompleted": true, "sampleDataLoaded": false }),
+            false,
+        )
+        .await;
+        // Replace the happy mock with a server error for the first attempt.
+        f.cloud.reset().await;
+        mount_quiet_cloud(&f).await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/status"))
+            .respond_with(ok(json!({ "setupCompleted": false })))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/setup-complete"))
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/setup-complete"))
+            .respond_with(ok(json!({ "setupCompleted": true, "changed": true })))
+            .mount(&f.cloud)
+            .await;
+
+        f.agent
+            .cycle()
+            .await
+            .expect("the sync itself still succeeds");
+        f.agent.cycle().await.unwrap();
+
+        assert_eq!(body_of(&f.cloud, "/api/sync/setup-complete").await.len(), 2);
     }
 
     #[tokio::test]

@@ -131,6 +131,13 @@ pub struct ApplyResult {
 
 pub type SecretFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
+/// What the local POS says about its own first-run setup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LocalSetup {
+    pub setup_completed: bool,
+    pub sample_data_loaded: bool,
+}
+
 pub struct LocalApi {
     http: reqwest::Client,
     base: String,
@@ -215,16 +222,22 @@ impl LocalApi {
             .map_err(|e| SyncError::new(ErrorKind::Local, "BAD_RESPONSE", e.to_string(), 0))
     }
 
-    /// Whether the local POS has finished its first-run setup (its admin exists).
-    /// A fresh install that is still waiting at the wizard answers `false`.
-    pub async fn setup_completed(&self) -> Result<bool, SyncError> {
+    /// The local POS's first-run state. A fresh install that is still waiting at
+    /// the wizard answers `setup_completed: false`.
+    pub async fn setup_status(&self) -> Result<LocalSetup, SyncError> {
         let value = self
             .call(Method::GET, "/api/system/setup-status", &[], None)
             .await?;
-        Ok(value
-            .get("setupCompleted")
-            .and_then(Value::as_bool)
-            .unwrap_or(false))
+        let flag = |key: &str| value.get(key).and_then(Value::as_bool).unwrap_or(false);
+        Ok(LocalSetup {
+            setup_completed: flag("setupCompleted"),
+            sample_data_loaded: flag("sampleDataLoaded"),
+        })
+    }
+
+    /// Whether the local POS has finished its first-run setup.
+    pub async fn setup_completed(&self) -> Result<bool, SyncError> {
+        Ok(self.setup_status().await?.setup_completed)
     }
 
     pub async fn state(&self) -> Result<LocalState, SyncError> {
@@ -341,6 +354,10 @@ pub type ClockFn = Arc<dyn Fn(i64) + Send + Sync>;
 pub struct CloudStatus {
     pub server_seq: i64,
     pub compacted_through_seq: i64,
+    /// The shop has finished its own first-time setup (demo vs clean data).
+    pub setup_completed: bool,
+    /// That setup loaded the demo data.
+    pub sample_data_loaded: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -512,6 +529,19 @@ impl CloudSyncApi {
                 "deviceName": device_name,
                 "appVersion": app_version,
             })),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Tells the cloud this shop's first-time setup is done (idempotent, one-way:
+    /// the cloud never un-sets it).
+    pub async fn mark_setup_complete(&self, sample_data_loaded: bool) -> Result<(), SyncError> {
+        self.call(
+            Method::POST,
+            "/api/sync/setup-complete",
+            &[],
+            Some(&json!({ "sampleDataLoaded": sample_data_loaded })),
         )
         .await
         .map(|_| ())
