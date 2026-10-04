@@ -219,6 +219,7 @@ pub fn run() {
             cloud::cloud_otp_verify,
             cloud::cloud_login_and_link,
             cloud::cloud_link_start,
+            cloud::cloud_link_open_browser,
             cloud::cloud_link_poll,
             cloud::cloud_unlink,
             cloud::cloud_list_devices,

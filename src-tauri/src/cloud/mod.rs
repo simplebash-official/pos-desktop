@@ -439,6 +439,16 @@ impl CloudState {
         })
     }
 
+    /// The page to open in the system browser for the link in progress: the web
+    /// app's approval page, with optional sign-in hints (never a secret).
+    pub fn link_browser_url(&self, hints: &LinkHints) -> Result<String, CloudError> {
+        let pending = self.pending.lock().unwrap();
+        let p = pending
+            .as_ref()
+            .ok_or_else(|| CloudError::new("NO_PENDING_LINK", "no link in progress", 0))?;
+        browser_url(&p.verification_url, hints)
+    }
+
     pub async fn link_poll(&self) -> Result<LinkPollView, CloudError> {
         let (base, _) = self.enabled()?;
         let (device_code, account_email, account_name) = {
@@ -713,10 +723,98 @@ pub async fn cloud_login_and_link(
     call.finish(res)
 }
 
+/// Sign-in hints the desktop passes to the web page. Only a provider name and
+/// an email address, so the page can start on the right button.
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkHints {
+    pub email: Option<String>,
+    pub provider: Option<String>,
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// Builds the URL to open. The server-provided address is only ever opened if it
+/// is https (or plain http to this machine, for local development), so a
+/// compromised or misconfigured server can't make the app launch another scheme.
+fn browser_url(verification_url: &str, hints: &LinkHints) -> Result<String, CloudError> {
+    let rest = if let Some(rest) = verification_url.strip_prefix("https://") {
+        rest
+    } else if let Some(rest) = verification_url.strip_prefix("http://") {
+        let host = rest.split(['/', ':', '?']).next().unwrap_or("");
+        if host != "localhost" && host != "127.0.0.1" {
+            return Err(CloudError::new(
+                "UNSAFE_LINK_URL",
+                "refusing to open a non-https link address",
+                0,
+            ));
+        }
+        rest
+    } else {
+        return Err(CloudError::new(
+            "UNSAFE_LINK_URL",
+            "refusing to open a non-https link address",
+            0,
+        ));
+    };
+    if rest.is_empty() || rest.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(CloudError::new(
+            "UNSAFE_LINK_URL",
+            "malformed link address",
+            0,
+        ));
+    }
+    let mut url = verification_url.to_string();
+    let sep = if url.contains('?') { '&' } else { '?' };
+    let mut extra = Vec::new();
+    if hints.provider.as_deref() == Some("google") {
+        extra.push("provider=google".to_string());
+    }
+    if let Some(email) = hints.email.as_deref().map(str::trim) {
+        if !email.is_empty() && email.len() <= 254 && email.contains('@') {
+            extra.push(format!("email={}", percent_encode(email)));
+        }
+    }
+    if !extra.is_empty() {
+        url.push(sep);
+        url.push_str(&extra.join("&"));
+    }
+    Ok(url)
+}
+
 #[tauri::command]
 pub async fn cloud_link_start(state: State<'_, CloudState>) -> Result<PendingLinkView, CloudError> {
     let call = CommandLog::start("cloud_link_start", json!({}));
     call.finish(state.link_start().await)
+}
+
+#[tauri::command]
+pub async fn cloud_link_open_browser(
+    app: AppHandle,
+    state: State<'_, CloudState>,
+    hints: Option<LinkHints>,
+) -> Result<(), CloudError> {
+    use tauri_plugin_shell::ShellExt;
+    let call = CommandLog::start("cloud_link_open_browser", json!({}));
+    let res = (|| {
+        let url = state.link_browser_url(&hints.unwrap_or_default())?;
+        #[allow(deprecated)]
+        app.shell()
+            .open(url, None)
+            .map_err(|e| CloudError::new("BROWSER_OPEN_FAILED", e.to_string(), 0))
+    })();
+    call.finish(res)
 }
 
 #[tauri::command]
@@ -1114,6 +1212,37 @@ mod tests {
         );
         let raw = std::fs::read_to_string(CloudFile::path(f.dir.path())).unwrap();
         assert!(!raw.contains("acc_1") && !raw.contains("ref_1") && !raw.contains("dc_1"));
+    }
+
+    #[test]
+    fn browser_url_only_opens_safe_addresses_and_carries_hints() {
+        let none = LinkHints::default();
+        assert_eq!(
+            browser_url("https://app.simplebash.com/link?code=ABCD-2345", &none).unwrap(),
+            "https://app.simplebash.com/link?code=ABCD-2345"
+        );
+        let hints = LinkHints {
+            email: Some(" a+b@shop.lk ".into()),
+            provider: Some("google".into()),
+        };
+        assert_eq!(
+            browser_url("https://app.simplebash.com/link?code=ABCD-2345", &hints).unwrap(),
+            "https://app.simplebash.com/link?code=ABCD-2345&provider=google&email=a%2Bb%40shop.lk"
+        );
+        assert!(browser_url("http://localhost:5174/link?code=X", &none).is_ok());
+        for bad in [
+            "http://evil.example/link",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "https://",
+            "https://a b.example/",
+        ] {
+            assert_eq!(
+                browser_url(bad, &none).unwrap_err().code,
+                "UNSAFE_LINK_URL",
+                "{bad}"
+            );
+        }
     }
 
     #[tokio::test]
