@@ -19,8 +19,10 @@ use serde_json::{json, Value};
 
 use crate::logging::{Level, LogEvent};
 
-use super::http::{BlockInfo, CloudSyncApi, ErrorKind, LocalApi, LocalState, SyncError};
-use super::state::{CycleSummary, HistoryKind, ModuleStatus, SyncControl, SyncPhase, SyncStep};
+use super::http::{
+    BlockInfo, CloudSyncApi, ErrorKind, LocalApi, LocalState, OutboxItem, ResourceCount, SyncError,
+};
+use super::state::{CycleSummary, HistoryKind, SyncControl, SyncPhase, SyncStep};
 
 /// Changes per upload request. Small on purpose: the cloud applies a batch one
 /// change at a time, so a big batch can outlast the request timeout, and the
@@ -174,34 +176,35 @@ pub struct CycleReport {
     pub bootstrap_required: bool,
 }
 
-/// Groups the backend's per-resource counts into one row per resource.
-fn modules_from(state: &LocalState) -> Vec<ModuleStatus> {
-    let mut rows: Vec<ModuleStatus> = Vec::new();
-    for (list, is_pending) in [
-        (&state.pending_by_resource, true),
-        (&state.conflicts_by_resource, false),
-    ] {
-        for item in list {
-            let row = match rows.iter().position(|r| r.resource == item.resource) {
-                Some(i) => &mut rows[i],
-                None => {
-                    rows.push(ModuleStatus {
-                        resource: item.resource.clone(),
-                        pending: 0,
-                        conflicts: 0,
-                    });
-                    rows.last_mut().expect("just pushed")
-                }
-            };
-            if is_pending {
-                row.pending = item.count;
-            } else {
-                row.conflicts = item.count;
-            }
+/// The backend's per-resource counts as plain pairs for the status helpers.
+fn pairs(list: &[ResourceCount]) -> Vec<(String, u64)> {
+    list.iter().map(|r| (r.resource.clone(), r.count)).collect()
+}
+
+/// How many of these changes belong to each record type (by their `resource`).
+fn tally<'a>(changes: impl Iterator<Item = &'a Value>) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = Vec::new();
+    for change in changes {
+        let Some(resource) = change.get("resource").and_then(Value::as_str) else {
+            continue;
+        };
+        match out.iter_mut().find(|(r, _)| r == resource) {
+            Some((_, n)) => *n += 1,
+            None => out.push((resource.to_string(), 1)),
         }
     }
-    rows.sort_by(|a, b| a.resource.cmp(&b.resource));
-    rows
+    out
+}
+
+/// Upload batch id: deterministic per outbox range, so a retry after a failure
+/// re-sends the very same id (which the cloud dedups). The epoch keeps ids
+/// unique when the local database is recreated and its numbering restarts.
+fn batch_id(device_id: &str, epoch: &str, first_seq: i64, last_seq: i64) -> String {
+    if epoch.is_empty() {
+        format!("{device_id}-{first_seq}-{last_seq}")
+    } else {
+        format!("{device_id}-{epoch}-{first_seq}-{last_seq}")
+    }
 }
 
 pub struct Agent {
@@ -214,6 +217,9 @@ pub struct Agent {
     pub device_name: String,
     pub app_version: String,
     registered: AtomicBool,
+    /// A full cycle has completed since this agent was built (device
+    /// registered, capture on, first sync done), so the fast paths may run.
+    ready: AtomicBool,
     /// The cloud already knows this shop is set up (nothing left to tell it).
     cloud_setup_marked: AtomicBool,
     last_block_check: Mutex<Option<Instant>>,
@@ -241,6 +247,7 @@ impl Agent {
             device_name,
             app_version,
             registered: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
             cloud_setup_marked: AtomicBool::new(false),
             last_block_check: Mutex::new(None),
         }
@@ -281,28 +288,89 @@ impl Agent {
         let state = self.local.state().await?;
 
         (report.pushed, report.refused) = self.push_all(&state).await?;
-        self.ctl.set_step(SyncStep::Downloading, 0);
-        match self.pull_all(state.cloud_cursor).await {
-            Ok(n) => report.pulled = n,
-            Err(e) if e.kind == ErrorKind::CursorExpired => {
-                self.ctl.require_bootstrap(
-                    "the cloud history no longer reaches this device; a full re-download is needed",
-                );
-                report.bootstrap_required = true;
-                return Ok(report);
-            }
-            Err(e) => return Err(e),
+        if !self.pull_step(&state, &mut report).await? {
+            return Ok(report);
         }
         self.ctl.set_step(SyncStep::Finishing, 0);
         report.blocks_reserved = self.top_up_blocks(&state).await?;
         self.sync_setup_flag().await;
 
+        let report = self.finish(report, state).await;
+        self.ready.store(true, Ordering::SeqCst);
+        Ok(report)
+    }
+
+    /// The realtime path: only what a wake asked for. `push` after a local
+    /// write, `pull` after the cloud announced a change. Skips everything the
+    /// full cycle does on its timer (registration, clock, number blocks, setup
+    /// flag) and falls back to the full cycle until one has completed.
+    pub async fn quick(&self, push: bool, pull: bool) -> Result<CycleReport, SyncError> {
+        if !self.ready.load(Ordering::SeqCst) {
+            return self.cycle().await;
+        }
+        let mut report = CycleReport::default();
+        self.ctl.update(|s| {
+            if s.state != SyncPhase::Paused {
+                s.state = SyncPhase::Syncing;
+            }
+            s.next_retry_at = None;
+        });
+        let state = self.local.state().await?;
+        if !state.linked || !state.capture_enabled {
+            self.ready.store(false, Ordering::SeqCst);
+            return self.cycle().await;
+        }
+        if push {
+            (report.pushed, report.refused) = self.push_all(&state).await?;
+        } else {
+            self.ctl.begin_modules(
+                &pairs(&state.pending_by_resource),
+                &pairs(&state.conflicts_by_resource),
+            );
+        }
+        if pull && !self.pull_step(&state, &mut report).await? {
+            return Ok(report);
+        }
+        Ok(self.finish(report, state).await)
+    }
+
+    /// Downloads everything after the local cursor. `false` when the cloud
+    /// history no longer reaches this device (a re-download was requested).
+    async fn pull_step(
+        &self,
+        state: &LocalState,
+        report: &mut CycleReport,
+    ) -> Result<bool, SyncError> {
+        self.ctl.set_step(SyncStep::Downloading, 0);
+        match self.pull_all(state.cloud_cursor).await {
+            Ok(n) => {
+                report.pulled = n;
+                Ok(true)
+            }
+            Err(e) if e.kind == ErrorKind::CursorExpired => {
+                self.ready.store(false, Ordering::SeqCst);
+                self.ctl.require_bootstrap(
+                    "the cloud history no longer reaches this device; a full re-download is needed",
+                );
+                report.bootstrap_required = true;
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// End of a cycle: fresh counts, status, history and the cycle log line.
+    async fn finish(&self, report: CycleReport, state: LocalState) -> CycleReport {
         let fresh = self.local.state().await.unwrap_or(state);
         let finished_at = chrono::Utc::now().to_rfc3339();
+        self.ctl.finish_modules(
+            &pairs(&fresh.pending_by_resource),
+            &pairs(&fresh.conflicts_by_resource),
+            &finished_at,
+        );
         self.ctl.update(|s| {
             s.step = SyncStep::Idle;
             s.progress = None;
-            s.modules = modules_from(&fresh);
             s.last_cycle = Some(CycleSummary {
                 at: finished_at.clone(),
                 sent: report.pushed as u64,
@@ -341,7 +409,7 @@ impl Agent {
                 "blocks": report.blocks_reserved,
             }))
             .emit();
-        Ok(report)
+        report
     }
 
     /// Once this device has finished the shop's first-time setup, tells the cloud
@@ -450,6 +518,9 @@ impl Agent {
             page = snap.next_page;
         }
         self.ctl.clear_bootstrap();
+        // Everything was replaced: every open screen should reload.
+        self.ctl.applied(&["*".to_string()]);
+        self.ready.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -458,50 +529,25 @@ impl Agent {
         let mut total = 0;
         let mut refused_total = 0;
         self.ctl.set_step(SyncStep::Uploading, state.pending_out);
+        self.ctl.begin_modules(
+            &pairs(&state.pending_by_resource),
+            &pairs(&state.conflicts_by_resource),
+        );
         loop {
             let page = self.local.outbox(after, PUSH_PAGE).await?;
             let (Some(first), Some(last)) = (page.items.first(), page.items.last()) else {
                 break;
             };
-            let (first_seq, last_seq) = (first.seq, last.seq);
+            let (_, last_seq) = (first.seq, last.seq);
             let count = page.items.len();
-            // Deterministic per outbox range: a retry after a failure re-sends
-            // the very same batch id, which the cloud dedups.
-            let body = json!({
-                "deviceId": self.device_id,
-                "batchId": format!("{}-{first_seq}-{last_seq}", self.device_id),
-                "baseSeq": state.cloud_cursor,
-                "changes": page.items.iter().map(|i| &i.record).collect::<Vec<_>>(),
-                "outboxSeqs": page.items.iter().map(|i| i.seq).collect::<Vec<_>>(),
-            });
-            let started = Instant::now();
-            let result = self.cloud.push(&body).await?;
-            LogEvent::shell("sync", "push.page")
-                .level(Level::Debug)
-                .data(json!({ "count": count, "ms": started.elapsed().as_millis() as u64 }))
-                .emit();
-            // Only now that the cloud confirmed does the outbox shrink.
-            self.local.ack(last_seq).await?;
-            let refused = result
-                .acks
-                .iter()
-                .filter(|a| {
-                    matches!(
-                        a.get("status").and_then(Value::as_str),
-                        Some("rejected" | "conflict")
-                    )
-                })
-                .count();
-            if refused > 0 {
-                LogEvent::shell("sync", "push.refused")
-                    .level(Level::Warn)
-                    .data(json!({ "count": refused, "batch": count }))
-                    .emit();
-            }
+            let refused = self
+                .push_page(&page.items, &page.epoch, state.cloud_cursor)
+                .await?;
             after = last_seq;
             total += count;
             refused_total += refused;
-            self.ctl.set_progress(total as u64);
+            self.ctl
+                .modules_sent(&tally(page.items.iter().map(|i| &i.record)), total as u64);
             if count < PUSH_PAGE {
                 break;
             }
@@ -509,9 +555,96 @@ impl Agent {
         Ok((total, refused_total))
     }
 
+    /// Uploads one outbox page. A page the cloud refuses outright (a 4xx that
+    /// retrying cannot fix, such as one malformed record) is split in halves
+    /// until the offending change is alone; that change is dropped and logged
+    /// like any other refused change, so it can never hold back the changes
+    /// queued behind it. Returns how many changes were refused.
+    async fn push_page(
+        &self,
+        items: &[OutboxItem],
+        epoch: &str,
+        base_seq: i64,
+    ) -> Result<usize, SyncError> {
+        let mut queue: VecDeque<&[OutboxItem]> = VecDeque::from([items]);
+        let mut refused = 0;
+        while let Some(chunk) = queue.pop_front() {
+            match self.push_chunk(chunk, epoch, base_seq).await {
+                Ok(n) => refused += n,
+                Err(e) if e.kind == ErrorKind::Invalid && chunk.len() > 1 => {
+                    let (head, tail) = chunk.split_at(chunk.len() / 2);
+                    queue.push_front(tail);
+                    queue.push_front(head);
+                }
+                Err(e) if e.kind == ErrorKind::Invalid => {
+                    let record = &chunk[0].record;
+                    LogEvent::shell("sync", "push.dropped")
+                        .level(Level::Warn)
+                        .data(json!({
+                            "resource": record.get("resource"),
+                            "key": record.get("key"),
+                            "code": e.code,
+                            "status": e.status,
+                        }))
+                        .emit();
+                    self.local.ack(chunk[0].seq).await?;
+                    refused += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(refused)
+    }
+
+    /// Sends one batch and, once the cloud confirmed it, drops it from the
+    /// outbox. Returns how many of its changes the cloud refused.
+    async fn push_chunk(
+        &self,
+        chunk: &[OutboxItem],
+        epoch: &str,
+        base_seq: i64,
+    ) -> Result<usize, SyncError> {
+        let (Some(first), Some(last)) = (chunk.first(), chunk.last()) else {
+            return Ok(0);
+        };
+        let body = json!({
+            "deviceId": self.device_id,
+            "batchId": batch_id(&self.device_id, epoch, first.seq, last.seq),
+            "baseSeq": base_seq,
+            "changes": chunk.iter().map(|i| &i.record).collect::<Vec<_>>(),
+            "outboxSeqs": chunk.iter().map(|i| i.seq).collect::<Vec<_>>(),
+        });
+        let started = Instant::now();
+        let result = self.cloud.push(&body).await?;
+        LogEvent::shell("sync", "push.page")
+            .level(Level::Debug)
+            .data(json!({ "count": chunk.len(), "ms": started.elapsed().as_millis() as u64 }))
+            .emit();
+        // Only now that the cloud confirmed does the outbox shrink.
+        self.local.ack(last.seq).await?;
+        let refused = result
+            .acks
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.get("status").and_then(Value::as_str),
+                    Some("rejected" | "conflict")
+                )
+            })
+            .count();
+        if refused > 0 {
+            LogEvent::shell("sync", "push.refused")
+                .level(Level::Warn)
+                .data(json!({ "count": refused, "batch": chunk.len() }))
+                .emit();
+        }
+        Ok(refused)
+    }
+
     async fn pull_all(&self, cursor: i64) -> Result<usize, SyncError> {
         let mut cursor = cursor;
         let mut pulled = 0;
+        let mut touched: Vec<String> = Vec::new();
         loop {
             let page = self.cloud.pull(cursor, PULL_PAGE).await?;
             let advance = page.next_seq.max(cursor);
@@ -526,12 +659,20 @@ impl Agent {
             });
             self.local.apply(&body).await?;
             pulled += count;
-            self.ctl.set_progress(pulled as u64);
+            let counts = tally(page.changes.iter());
+            for (resource, _) in &counts {
+                if !touched.contains(resource) {
+                    touched.push(resource.clone());
+                }
+            }
+            self.ctl.modules_received(&counts, pulled as u64);
             cursor = advance;
             if !page.has_more {
                 break;
             }
         }
+        // Once per download, so open screens reload once, not per page.
+        self.ctl.applied(&touched);
         Ok(pulled)
     }
 
@@ -613,7 +754,7 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::state::Recorder;
+    use crate::sync::state::{Recorder, SyncStatus};
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -878,6 +1019,107 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_record_type_reports_what_was_sent_and_received_as_it_happens() {
+        let f = fixture().await;
+        // Registered before the quiet cloud's empty pull, so this one answers.
+        Mock::given(method("GET"))
+            .and(path("/api/sync/pull"))
+            .respond_with(ok(json!({
+                "changes": [
+                    { "seq": 6, "resource": "customers", "key": "c1" },
+                    { "seq": 7, "resource": "customers", "key": "c2" },
+                    { "seq": 8, "resource": "customers", "key": "c3" }
+                ],
+                "nextSeq": 8,
+                "hasMore": false
+            })))
+            .mount(&f.cloud)
+            .await;
+        mount_quiet_cloud(&f).await;
+
+        let mut waiting = state(5, 3);
+        waiting["pendingOut"] = json!(27);
+        waiting["pendingByResource"] = json!([
+            { "resource": "invoices", "count": 20 },
+            { "resource": "products", "count": 7 }
+        ]);
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(waiting))
+            .mount(&f.local)
+            .await;
+        let item = |seq: i64, resource: &str| json!({ "seq": seq, "record": { "resource": resource, "key": format!("k{seq}") } });
+        // First batch: 20 invoices then 5 products; second batch: the last 2 products.
+        let first: Vec<Value> = (4..=23)
+            .map(|s| item(s, "invoices"))
+            .chain((24..=28).map(|s| item(s, "products")))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .and(query_param("after", "3"))
+            .respond_with(ok(json!({ "items": first, "lastSeq": 28 })))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .and(query_param("after", "28"))
+            .respond_with(ok(json!({
+                "items": [item(29, "products"), item(30, "products")],
+                "lastSeq": 30
+            })))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/push"))
+            .respond_with(ok(json!({ "acks": [], "serverSeq": 9 })))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/outbox/ack"))
+            .respond_with(ok(json!({})))
+            .mount(&f.local)
+            .await;
+
+        let report = f.agent.cycle().await.unwrap();
+        assert_eq!((report.pushed, report.pulled), (27, 3));
+
+        let seen = f.rec.statuses.lock().unwrap().clone();
+        let find = |s: &SyncStatus, r: &str| s.modules.iter().find(|m| m.resource == r).cloned();
+
+        // The cycle opens with what is waiting per type, before anything is sent.
+        assert!(seen.iter().any(|s| {
+            s.step == SyncStep::Uploading
+                && find(s, "invoices").is_some_and(|m| m.pending == 20 && m.sent == 0)
+                && find(s, "products").is_some_and(|m| m.pending == 7 && m.sent == 0)
+        }));
+        // After batch one, invoices are finished while products still have 2 to go.
+        assert!(seen.iter().any(|s| {
+            find(s, "invoices").is_some_and(|m| m.pending == 0 && m.sent == 20)
+                && find(s, "products").is_some_and(|m| m.pending == 2 && m.sent == 5)
+        }));
+        // Downloaded changes are counted for their own record type while downloading.
+        assert!(seen.iter().any(|s| {
+            s.step == SyncStep::Downloading && find(s, "customers").is_some_and(|m| m.received == 3)
+        }));
+
+        // When the cycle ends, each type that moved data remembers it.
+        let end = f.agent.ctl.snapshot();
+        let change = |r: &str| find(&end, r).and_then(|m| m.last_change);
+        assert_eq!(
+            change("invoices").map(|c| (c.sent, c.received)),
+            Some((20, 0))
+        );
+        assert_eq!(
+            change("products").map(|c| (c.sent, c.received)),
+            Some((7, 0))
+        );
+        assert_eq!(
+            change("customers").map(|c| (c.sent, c.received)),
+            Some((0, 3))
+        );
+    }
+
+    #[tokio::test]
     async fn linked_agent_tops_up_sku_and_barcode_blocks_alongside_the_fixed_families() {
         let f = fixture().await;
         mount_quiet_cloud(&f).await;
@@ -983,6 +1225,225 @@ mod tests {
         assert_eq!(pushes.len(), 2);
         assert_eq!(pushes[0]["batchId"], pushes[1]["batchId"]);
         assert_eq!(body_of(&f.local, "/api/sync/outbox/ack").await.len(), 1);
+    }
+
+    async fn count_of(server: &MockServer, method_name: &str, http_path: &str) -> usize {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.method.as_str() == method_name && r.url.path() == http_path)
+            .count()
+    }
+
+    /// A linked device with one change waiting and a cloud that accepts it.
+    async fn ready_to_push(f: &Fixture) {
+        mount_quiet_cloud(f).await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(state(5, 3)))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(outbox(&[4])))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/outbox/ack"))
+            .respond_with(ok(json!({})))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/push"))
+            .respond_with(ok(json!({ "acks": [], "serverSeq": 9 })))
+            .mount(&f.cloud)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_realtime_wake_before_any_full_cycle_runs_the_full_cycle() {
+        let f = fixture().await;
+        ready_to_push(&f).await;
+
+        f.agent.quick(true, false).await.unwrap();
+
+        assert_eq!(
+            count_of(&f.cloud, "POST", "/api/sync/devices/register").await,
+            1
+        );
+        assert_eq!(count_of(&f.cloud, "GET", "/api/sync/pull").await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_local_write_only_uploads_and_a_cloud_change_only_downloads() {
+        let f = fixture().await;
+        ready_to_push(&f).await;
+        f.agent.cycle().await.unwrap();
+        let pulls = count_of(&f.cloud, "GET", "/api/sync/pull").await;
+        let pushes = count_of(&f.cloud, "POST", "/api/sync/push").await;
+        let reserves = f.cloud.received_requests().await.unwrap().len();
+
+        let report = f.agent.quick(true, false).await.unwrap();
+        assert_eq!(report.pushed, 1);
+        assert_eq!(
+            count_of(&f.cloud, "POST", "/api/sync/push").await,
+            pushes + 1
+        );
+        assert_eq!(count_of(&f.cloud, "GET", "/api/sync/pull").await, pulls);
+
+        f.agent.quick(false, true).await.unwrap();
+        assert_eq!(count_of(&f.cloud, "GET", "/api/sync/pull").await, pulls + 1);
+        assert_eq!(
+            count_of(&f.cloud, "POST", "/api/sync/push").await,
+            pushes + 1
+        );
+        // Neither fast path re-registers, re-syncs the clock or reserves blocks:
+        // exactly the push and the pull above reached the cloud.
+        assert_eq!(
+            f.cloud.received_requests().await.unwrap().len(),
+            reserves + 2
+        );
+    }
+
+    #[tokio::test]
+    async fn a_download_tells_the_screens_which_record_types_changed() {
+        let f = fixture().await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/pull"))
+            .respond_with(ok(json!({
+                "changes": [
+                    { "seq": 6, "resource": "customers", "key": "c1" },
+                    { "seq": 7, "resource": "products", "key": "p1" },
+                    { "seq": 8, "resource": "customers", "key": "c2" }
+                ],
+                "nextSeq": 8,
+                "hasMore": false
+            })))
+            .up_to_n_times(1)
+            .mount(&f.cloud)
+            .await;
+        ready_to_push(&f).await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/apply"))
+            .respond_with(ok(json!({ "applied": 3 })))
+            .mount(&f.local)
+            .await;
+
+        f.agent.cycle().await.unwrap();
+
+        let applied = f.rec.applied.lock().unwrap().clone();
+        assert_eq!(
+            applied,
+            vec![vec!["customers".to_string(), "products".to_string()]]
+        );
+        // A quiet download tells nobody anything.
+        f.agent.quick(false, true).await.unwrap();
+        assert_eq!(f.rec.applied.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn batch_ids_carry_the_outbox_epoch_so_a_recreated_database_never_reuses_one() {
+        let f = fixture().await;
+        mount_quiet_cloud(&f).await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(state(5, 3)))
+            .mount(&f.local)
+            .await;
+        let mut page = outbox(&[4, 5]);
+        page["epoch"] = json!("ep_abc");
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(page))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/outbox/ack"))
+            .respond_with(ok(json!({})))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/push"))
+            .respond_with(ok(json!({ "acks": [], "serverSeq": 9 })))
+            .mount(&f.cloud)
+            .await;
+
+        f.agent.cycle().await.unwrap();
+
+        let pushes = body_of(&f.cloud, "/api/sync/push").await;
+        assert_eq!(pushes[0]["batchId"], "dev_cloud-ep_abc-4-5");
+    }
+
+    /// Refuses (400) any batch holding `prod_6`, accepts everything else.
+    struct RefusesProd6;
+
+    impl wiremock::Respond for RefusesProd6 {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+            let poisoned = body["changes"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|r| r["key"] == "prod_6"));
+            if poisoned {
+                ResponseTemplate::new(400)
+                    .set_body_json(json!({ "code": "INVALID", "message": "bad record" }))
+            } else {
+                ok(json!({ "acks": [], "serverSeq": 9 }))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn one_refused_change_is_isolated_and_never_blocks_the_rest_of_the_queue() {
+        let f = fixture().await;
+        mount_quiet_cloud(&f).await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(state(5, 3)))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(outbox(&[4, 5, 6, 7])))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/outbox/ack"))
+            .respond_with(ok(json!({})))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/push"))
+            .respond_with(RefusesProd6)
+            .mount(&f.cloud)
+            .await;
+
+        let report = f.agent.cycle().await.unwrap();
+
+        // Every change but the refused one reached the cloud, in order.
+        let accepted: Vec<i64> = body_of(&f.cloud, "/api/sync/push")
+            .await
+            .into_iter()
+            .filter(|b| {
+                !b["changes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r["key"] == "prod_6")
+            })
+            .flat_map(|b| b["outboxSeqs"].as_array().unwrap().clone())
+            .map(|v| v.as_i64().unwrap())
+            .collect();
+        assert_eq!(accepted, vec![4, 5, 7]);
+        // The queue fully drained: the refused change was dropped, not retried.
+        let acks: Vec<i64> = body_of(&f.local, "/api/sync/outbox/ack")
+            .await
+            .into_iter()
+            .map(|b| b["upToSeq"].as_i64().unwrap())
+            .collect();
+        assert_eq!(acks, vec![5, 6, 7]);
+        assert_eq!(report.pushed, 4);
     }
 
     #[tokio::test]

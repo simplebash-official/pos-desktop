@@ -4,6 +4,9 @@
 //
 //   LocalApi      -> http://127.0.0.1:<port>/api/sync/*   (service token)
 //   CloudSyncApi  -> <sync base>/api/sync/*, /api/sequences/* (device token)
+//
+// Each also opens its server-sent event stream (`open_events`), which the
+// listeners in `sync::live` read; those responses have no overall timeout.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -128,6 +131,8 @@ pub struct OutboxItem {
 pub struct OutboxPage {
     pub items: Vec<OutboxItem>,
     pub last_seq: i64,
+    /// Identity of the local outbox numbering (empty from older backends).
+    pub epoch: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -148,6 +153,7 @@ pub struct LocalSetup {
     pub sample_data_loaded: bool,
 }
 
+#[derive(Clone)]
 pub struct LocalApi {
     http: reqwest::Client,
     base: String,
@@ -161,6 +167,39 @@ impl LocalApi {
             base: base.into().trim_end_matches('/').to_string(),
             secret,
         }
+    }
+
+    /// Opens `GET /api/sync/local/events` (an endless stream).
+    pub async fn open_events(&self) -> Result<reqwest::Response, SyncError> {
+        let secret = (self.secret)().ok_or_else(|| {
+            SyncError::new(
+                ErrorKind::Local,
+                "LOCAL_SECRET_MISSING",
+                "local service secret is not available yet",
+                0,
+            )
+        })?;
+        let token = mint_service_token(&secret, Utc::now().timestamp());
+        let resp = self
+            .http
+            .get(format!("{}/api/sync/local/events", self.base))
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| network_error(ErrorKind::Local, e))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            let e = error_from_body(status.as_u16(), &text);
+            return Err(SyncError::new(
+                ErrorKind::Local,
+                &e.code,
+                e.message,
+                status.as_u16(),
+            ));
+        }
+        Ok(resp)
     }
 
     async fn call(
@@ -403,6 +442,7 @@ pub struct SnapshotResult {
     pub next_page: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct CloudSyncApi {
     http: reqwest::Client,
     base: String,
@@ -516,6 +556,37 @@ impl CloudSyncApi {
     /// Lightweight reachability check against the cloud sync endpoint.
     /// Does not require authorization or a valid token; any response (even 4xx) proves
     /// internet connectivity and route liveness to the cloud.
+    /// Opens `GET /api/sync/events` (an endless stream), refreshing the device
+    /// token once if the cloud rejects it.
+    pub async fn open_events(&self) -> Result<reqwest::Response, SyncError> {
+        for attempt in 0..2 {
+            let token = (self.token)(attempt == 1).await?;
+            let resp = self
+                .http
+                .get(format!("{}/api/sync/events", self.base))
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .bearer_auth(token)
+                .send()
+                .await
+                .map_err(|e| network_error(ErrorKind::Offline, e))?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp);
+            }
+            if status.as_u16() == 401 && attempt == 0 {
+                continue;
+            }
+            let text = resp.text().await.unwrap_or_default();
+            return Err(classify(status.as_u16(), &text));
+        }
+        Err(SyncError::new(
+            ErrorKind::Unauthorized,
+            "UNAUTHORIZED",
+            "cloud rejected the device token",
+            401,
+        ))
+    }
+
     pub async fn check_reachability(&self) -> bool {
         let url = format!("{}/api/sync/status", self.base);
         match self
@@ -613,7 +684,9 @@ fn classify(status: u16, body: &str) -> SyncError {
         401 => ErrorKind::Unauthorized,
         403 if e.code == "DEVICE_REVOKED" => ErrorKind::Revoked,
         403 => ErrorKind::Unauthorized,
-        429 | 500..=599 => ErrorKind::Server,
+        // A concurrent retry of the same batch is still running on the cloud.
+        409 if e.code == "IDEMPOTENCY_IN_PROGRESS" => ErrorKind::Server,
+        408 | 429 | 500..=599 => ErrorKind::Server,
         _ => ErrorKind::Invalid,
     };
     let code = if status == 410 && e.code == "CLOUD_ERROR" {
