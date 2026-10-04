@@ -8,7 +8,12 @@
 //
 // The agent starts only when cloud sync is enabled (a cloud URL exists); it
 // then idles until this device is linked. The webview only ever sees counters
-// (`sync://status`), never record bodies or tokens.
+// (`sync://status`) and which record types just changed (`sync://applied`),
+// never record bodies or tokens.
+//
+// It is event driven (see `live`): a local write wakes an upload and a cloud
+// announcement wakes a download within milliseconds; the timer is only a
+// safety net (and runs the periodic work: clock, number blocks, setup flag).
 //
 // ---------------------------------------------------------------------------
 // LOCAL ENDPOINT CONTRACT (implemented by the backend, `TENANT_MODE=single`).
@@ -34,16 +39,19 @@
 //   POST /api/sync/blocks         { name, prefix, padding, start, end, expiresAt }
 //   GET  /api/sync/conflicts      -> { items: [...] } (or a bare array)
 //   POST /api/sync/conflicts/{key}/resolve   { resolution }
+//   GET  /api/sync/local/events   (SSE) `outbox` on connect and after each write
 //
 // CLOUD CALLS (device access token; sync base = cloud.json `syncApiUrl`, or
 // build-time `CLOUD_SYNC_API_URL`, else the identity `apiUrl`):
 //   GET /api/sync/status | POST /api/sync/devices/register | POST /api/sync/push
 //   GET /api/sync/pull?since=&limit= | GET /api/sync/snapshot?page=
+//   GET /api/sync/events (SSE) `hello` {latestSeq}, `change` {seq,resource,origin}, `resync`
 //   POST /api/sequences/{name}/reserve
 // ---------------------------------------------------------------------------
 
 mod agent;
 mod http;
+mod live;
 mod state;
 mod token;
 
@@ -62,7 +70,7 @@ use crate::orchestrator::{read_jwt_secret, BACKEND_PORT, LOOPBACK};
 use agent::{Agent, Backoff, ClockSampler, IDLE_INTERVAL, PUSH_PAGE};
 use http::{ClockFn, CloudSyncApi, ErrorKind, LocalApi, SecretFn, SyncError, TokenFn};
 pub use state::SyncStatus;
-use state::{HistoryKind, StatusSink, SyncControl, SyncPhase, SyncStep};
+use state::{HistoryKind, LiveChannel, StatusSink, SyncControl, SyncPhase, SyncStep, Wakes};
 
 /// Local sync failures at start-up (backend still booting) are not shown as
 /// errors until this many attempts in a row have failed.
@@ -73,6 +81,76 @@ const UNLINKED_POLL: Duration = Duration::from_secs(10);
 const BUSY_INTERVAL: Duration = Duration::from_secs(2);
 /// Longest wait before retrying a failure of this computer's own backend.
 const LOCAL_RETRY_CAP: Duration = Duration::from_secs(15);
+/// Safety-net cycle while both realtime streams are connected: they announce
+/// every change, so the timer only does the periodic work.
+const LIVE_IDLE_INTERVAL: Duration = Duration::from_secs(60);
+/// After a realtime wake, how long to gather further wakes into one run
+/// (a sale writes several rows in quick succession).
+const COALESCE: Duration = Duration::from_millis(30);
+
+/// The realtime listener tasks of one linked session; dropping it stops them.
+struct Listeners {
+    tasks: Vec<tauri::async_runtime::JoinHandle<()>>,
+    ctl: Arc<SyncControl>,
+}
+
+impl Listeners {
+    fn start(agent: &Agent) -> Self {
+        let ctl = agent.ctl.clone();
+        Self {
+            tasks: vec![
+                tauri::async_runtime::spawn(live::run_local(agent.local.clone(), ctl.clone())),
+                tauri::async_runtime::spawn(live::run_cloud(agent.cloud.clone(), ctl.clone())),
+            ],
+            ctl,
+        }
+    }
+}
+
+impl Drop for Listeners {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+        self.ctl.set_live(LiveChannel::Local, false);
+        self.ctl.set_live(LiveChannel::Cloud, false);
+    }
+}
+
+/// Waits up to `delay` for a wake and reports what was asked. A timeout asks
+/// for a full cycle; a realtime wake waits a moment more so a burst of
+/// writes becomes one upload.
+async fn wait_for_work(ctl: &SyncControl, delay: Duration) -> Wakes {
+    if !ctl.wait(delay).await {
+        let mut wakes = ctl.take_wakes();
+        wakes.full = true;
+        return wakes;
+    }
+    tokio::time::sleep(COALESCE).await;
+    ctl.take_wakes()
+}
+
+/// Waits out a failure backoff. Realtime wakes do not cut it short (a busy
+/// shop would otherwise retry a failing cloud on every sale) but are kept;
+/// only an explicit request (sync now, resume) does.
+async fn wait_out_backoff(ctl: &SyncControl, delay: Duration) -> Wakes {
+    let deadline = std::time::Instant::now() + delay;
+    let mut kept = Wakes::default();
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() || !ctl.wait(remaining).await {
+            kept.full = true;
+            return kept;
+        }
+        let wakes = ctl.take_wakes();
+        kept.local |= wakes.local;
+        kept.remote |= wakes.remote;
+        if wakes.full {
+            kept.full = true;
+            return kept;
+        }
+    }
+}
 
 pub struct SyncManager {
     ctl: Arc<SyncControl>,
@@ -159,6 +237,12 @@ impl StatusSink for TauriSink {
             .0
             .emit("sync://bootstrap-required", json!({ "reason": reason }));
     }
+
+    fn applied(&self, resources: &[String]) {
+        let _ = self
+            .0
+            .emit("sync://applied", json!({ "resources": resources }));
+    }
 }
 
 /// Builds the manager (always managed so the commands resolve) and starts the
@@ -214,8 +298,13 @@ async fn supervise(handle: AppHandle) {
     let ctl = handle.state::<SyncManager>().ctl.clone();
     let mut backoff = Backoff::default();
     let mut failures: u32 = 0;
-    let mut current: Option<(SyncSession, Agent)> = None;
+    let mut current: Option<(SyncSession, Agent, Listeners)> = None;
     let mut was_offline = false;
+    // The first run after start-up (or a relink) is always a full cycle.
+    let mut wakes = Wakes {
+        full: true,
+        ..Wakes::default()
+    };
 
     loop {
         let session = match handle.state::<CloudState>().sync_session() {
@@ -227,11 +316,21 @@ async fn supervise(handle: AppHandle) {
                     s.state = SyncPhase::Idle;
                 });
                 ctl.wait(UNLINKED_POLL).await;
+                wakes.full = true;
                 continue;
             }
         };
-        if current.as_ref().map(|(s, _)| s != &session).unwrap_or(true) {
-            current = Some((session.clone(), build_agent(&handle, &session)));
+        if current
+            .as_ref()
+            .map(|(s, _, _)| s != &session)
+            .unwrap_or(true)
+        {
+            // Stop the old session's listeners before starting new ones.
+            drop(current.take());
+            let agent = build_agent(&handle, &session);
+            let listeners = Listeners::start(&agent);
+            current = Some((session.clone(), agent, listeners));
+            wakes.full = true;
         }
         let agent = &current.as_ref().expect("agent was just built").1;
 
@@ -250,14 +349,19 @@ async fn supervise(handle: AppHandle) {
                         .emit();
                 }
             }
+            wakes.full = true;
             continue;
         }
         if ctl.is_paused() {
-            ctl.wait(IDLE_INTERVAL).await;
+            wakes = wait_for_work(&ctl, IDLE_INTERVAL).await;
             continue;
         }
 
-        let result = agent.cycle().await;
+        let result = if wakes.full || !(wakes.local || wakes.remote) {
+            agent.cycle().await
+        } else {
+            agent.quick(wakes.local, wakes.remote).await
+        };
         // A cycle that stopped early (bootstrap needed, error) must not leave
         // the UI showing "uploading".
         ctl.update(|s| {
@@ -273,13 +377,20 @@ async fn supervise(handle: AppHandle) {
                     ctl.push_history(HistoryKind::Online, 0, 0, None);
                 }
                 let pending = ctl.snapshot().pending_out;
-                let busy = report.pushed >= PUSH_PAGE
-                    || report.pulled > 0
-                    || report.pushed > 0
-                    || pending > 0;
-                let delay = if busy { BUSY_INTERVAL } else { IDLE_INTERVAL };
+                let live = ctl.live_connected();
+                let more_work = report.pushed >= PUSH_PAGE || pending > 0;
+                let moved = report.pulled > 0 || report.pushed > 0;
+                // Without the realtime streams, a cycle that moved data is a
+                // hint that more is coming, so look again soon.
+                let delay = if more_work || (moved && !live) {
+                    BUSY_INTERVAL
+                } else if live {
+                    LIVE_IDLE_INTERVAL
+                } else {
+                    IDLE_INTERVAL
+                };
                 ctl.set_next_retry(Some(delay));
-                ctl.wait(delay).await;
+                wakes = wait_for_work(&ctl, delay).await;
             }
             Err(e) => {
                 failures += 1;
@@ -292,6 +403,7 @@ async fn supervise(handle: AppHandle) {
                         ctl.push_history(HistoryKind::Error, 0, 0, Some(e.message.clone()));
                         ctl.update(|s| s.last_error = Some(e.message.clone()));
                         ctl.pause();
+                        wakes.full = true;
                         continue;
                     }
                     ErrorKind::Offline => {
@@ -320,6 +432,11 @@ async fn supervise(handle: AppHandle) {
                                 break;
                             }
                         }
+                        ctl.take_wakes();
+                        wakes = Wakes {
+                            full: true,
+                            ..Wakes::default()
+                        };
                         continue;
                     }
                     ErrorKind::Local if failures <= LOCAL_GRACE_ATTEMPTS => {}
@@ -335,7 +452,7 @@ async fn supervise(handle: AppHandle) {
                 let jitter: f64 = rand::thread_rng().gen_range(-0.2..0.2);
                 let delay = retry_delay(e.kind, backoff.next_delay(jitter));
                 ctl.set_next_retry(Some(delay));
-                ctl.wait(delay).await;
+                wakes = wait_out_backoff(&ctl, delay).await;
             }
         }
     }
