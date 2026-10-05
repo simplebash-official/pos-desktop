@@ -1,0 +1,28 @@
+name: submodule-pins
+
+# Guards the release inputs: a submodule pin may only move forward. See
+# scripts/ci/check-submodule-pins.sh for why (5efa4b7 shipped an old backend
+# in v0.17.1). Runs on every PR and every push to main, with no paths filter:
+# a pin change is a gitlink-only diff that path filters never match. It only
+# fetches commit graphs, so it finishes in seconds.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  pins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Submodule pins only move forward
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/ci/check-submodule-pins.sh "$BASE" HEAD
