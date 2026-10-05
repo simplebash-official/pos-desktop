@@ -1,6 +1,6 @@
 {
   "name": "simplebash-pos-desktop",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "private": true,
   "license": "AGPL-3.0-only",
   "description": "Tauri desktop bundle of the SimpleBash POS frontend + backend + document-server",
