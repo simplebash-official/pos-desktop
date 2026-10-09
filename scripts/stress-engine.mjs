@@ -80,7 +80,7 @@ async function authenticateAdmin() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      email: 'admin@pos.com',
+      username: 'admin',
       password: 'admin@1234',
     }),
   });
