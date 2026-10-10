@@ -51,7 +51,7 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/simplebash-backend", "binaries/simplebash-document-server"],
-    "resources": ["resources/templates/**/*", "resources/fonts/**/*"],
+    "resources": ["resources/templates.pack", "resources/fonts/**/*"],
     "macOS": {
       "minimumSystemVersion": "10.15",
       "entitlements": "entitlements.plist"

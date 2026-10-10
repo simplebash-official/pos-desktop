@@ -30,6 +30,9 @@ src-tauri/target/
 src-tauri/gen/schemas
 src-tauri/binaries/
 src-tauri/resources/
+scripts/pack-templates/target/
+# private designs, checked out by CI (simplebash-official/document-templates)
+document-templates/
 
 # Tauri app icons are build inputs, keep them despite the *.png rule above
 !src-tauri/icons/
