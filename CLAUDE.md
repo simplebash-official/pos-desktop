@@ -18,7 +18,7 @@ Two deployment targets from the same backend/frontend code:
 - **Web** — Docker Compose + MongoDB (multi-tenant, shop-code login), built and rolled out from
   `pos-compose` (`pos/deployment/scripts/deploy.sh`). While GitHub Actions credits are exhausted this is a
   manual build → GHCR → SSH rollout; see that repo's README.
-- **Desktop** — Tauri + SQLite, one shop, works offline. Built and released from this repo. See below.
+- **Desktop** — Tauri + SQLite, works offline, one open shop at a time with each shop's data kept separately on the computer (see "Shops on this computer"). Built and released from this repo. See below.
 
 Each submodule has its own directory-scoped `CLAUDE.md` (`backend/CLAUDE.md` etc.) that loads when
 working under that tree.
@@ -62,6 +62,17 @@ Rules that follow from this:
 The setup wizard's optional cloud step talks to the identity server (`cloud/identity-server`, auth.simplebash.com). It only appears when `CLOUD_API_URL` was set **at build time** — installers built without it (the current default) hide the step. Official release builds get it from the **repository variable** `CLOUD_API_URL` (Settings → Secrets and variables → Actions → Variables; set to `https://auth.simplebash.com`), read by `desktop-build.yml`. **Also set `CLOUD_SYNC_API_URL` to `https://pos-api.simplebash.com`**: `/api/sync/*` is served by the POS backend, not identity, and without it sync falls back to `CLOUD_API_URL` (auth.) and fails with `CLOUD_ERROR … (404)`. It is a variable rather than a literal on purpose: forks have no such variable, so their builds stay cloud-disabled instead of talking to our servers. Local builds: `CLOUD_API_URL=… npm run build:desktop`.
 **Phone verification:** identity requires a verified Sri Lankan mobile for every sign-up (`OTP_REQUIRED=true`). The shell exposes `cloud_otp_send` (texts a 6-digit code) and `cloud_otp_verify` (returns a one-time `phoneProof`), and `cloud_register` takes `phone` + `phoneProof`; the account UI (`pos/frontend` → `features/account/components/PhoneVerification.tsx`, used by both the wizard's `RegisterStep` and Settings → Account) collects them. **Installed desktops that predate this cannot register** (identity answers `PHONE_NOT_VERIFIED`) until they update. The shell never logs the code or the proof, and logs the number as `***4567` only (`logging/redact.rs` also masks any `proof` key).
 Desktop sign-ups send only the shop (no `posOwner`), so identity does **not** create a web Admin; the desktop's local Admin arrives later through device sync. Verify how sync handles a tenant that already has an Admin (a shop first created on app.simplebash.com) before enabling device linking for such shops.
+
+### Shops on this computer
+
+Each SimpleBash shop linked to this computer is a **profile** with its own database folder, so switching shop swaps the whole shop and two shops never mix rows. Code: `src-tauri/src/cloud/profiles.rs`; commands `profiles_list`, `profile_activate`, `cloud_link_cancel`; UI in `pos/frontend` (`features/account`: `ShopAccountCard` on the login screen, `SwitchShopModal`).
+
+- **Layout:** `<app_data_dir>/profiles.json` is the registry and always exists after start-up. Each profile's `db/` (pos.db, document_server.db), `assets/` and `generated_documents/` live in `shops/<profileId>/`. The id is generated (`shop_<hex>`), never the server's tenant id, so nothing from the network becomes a path. `config.json`, `installation.json`, `cloud.json`, logs and the device key stay installation-wide.
+- **Migration:** the first start after this feature creates the registry from `cloud.json` and moves the old `db/`, `assets/`, `generated_documents/` into the first profile (`recover` in `profiles.rs`, called from `lib.rs` before anything reads the link). Nothing else keeps the old paths. A missing or unreadable registry is an error, never a silent fresh start.
+- **One active link:** `cloud.json` and the active keychain keys hold the open profile's link. A switch parks the outgoing link (tokens move to `<key>@<profileId>`) and restores the target's, then restarts the app (`restart_soon`: stops the sidecars itself because Tauri's `restart` skips `RunEvent::Exit`). `switching` in the registry makes an interrupted switch finish on the next boot.
+- **A profile belongs to one shop:** once bound, it only ever syncs with that shop. Guards: `sync_session()` refuses a link that is not the open profile's, the sync agent stops with `LOCAL_TENANT_MISMATCH` if the database's `sync_state.tenant_id` differs from the session, and password sign-in (`cloud_login_and_link`) refuses to overwrite another shop's tokens (`SWITCH_NEEDS_BROWSER`); switching goes through the browser link.
+- **Cancelling** a waiting link uses `cloud_link_cancel`, never `cloud_unlink` (which would drop the open shop's link).
+- Identity's `link/poll` response carries `shopName` (required) so the card can name the shop.
 
 ## Releases are automatic — commit messages drive them
 

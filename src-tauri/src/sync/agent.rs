@@ -266,6 +266,20 @@ impl Agent {
         self.ctl.set_step(SyncStep::Preparing, 0);
 
         let mut state = self.local.state().await?;
+        // A shop's database only ever syncs with that shop. If this one was last
+        // linked to another, pushing or pulling would mix the two shops' rows.
+        if state
+            .tenant_id
+            .as_deref()
+            .is_some_and(|t| !t.is_empty() && t != self.tenant_id)
+        {
+            return Err(SyncError::new(
+                ErrorKind::Invalid,
+                "LOCAL_TENANT_MISMATCH",
+                "this computer's data belongs to another shop; switch shop to open it",
+                0,
+            ));
+        }
         if !state.linked || !state.capture_enabled {
             self.local.enable(&self.tenant_id, &self.device_id).await?;
             state = self.local.state().await?;
@@ -1444,6 +1458,51 @@ mod tests {
             .collect();
         assert_eq!(acks, vec![5, 6, 7]);
         assert_eq!(report.pushed, 4);
+    }
+
+    #[tokio::test]
+    async fn a_database_that_belongs_to_another_shop_never_syncs() {
+        let f = fixture().await;
+        let mut other = state(5, 3);
+        other["tenantId"] = json!("tnt_other");
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(other))
+            .mount(&f.local)
+            .await;
+
+        let err = f.agent.cycle().await.unwrap_err();
+        assert_eq!(err.code, "LOCAL_TENANT_MISMATCH");
+        // Nothing reached either side beyond reading the state.
+        for server in [&f.local, &f.cloud] {
+            let writes = server
+                .received_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.url.path() != "/api/sync/state")
+                .count();
+            assert_eq!(writes, 0, "no request may follow a tenant mismatch");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_database_of_the_same_shop_syncs_as_before() {
+        let f = fixture().await;
+        mount_quiet_cloud(&f).await;
+        let mut same = state(5, 3);
+        same["tenantId"] = json!("tnt_1");
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(same))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(outbox(&[])))
+            .mount(&f.local)
+            .await;
+        assert!(f.agent.cycle().await.is_ok());
     }
 
     #[tokio::test]

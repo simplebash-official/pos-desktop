@@ -105,6 +105,8 @@ pub struct ResourceCount {
 #[serde(rename_all = "camelCase", default)]
 pub struct LocalState {
     pub device_id: String,
+    /// The shop this database belongs to once it has synced; `None` before.
+    pub tenant_id: Option<String>,
     pub linked: bool,
     pub capture_enabled: bool,
     pub cloud_cursor: i64,

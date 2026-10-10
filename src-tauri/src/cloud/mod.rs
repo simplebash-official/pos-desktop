@@ -7,9 +7,11 @@
 // keychain (`store::SecretStore`), never in a file, a log or the webview.
 
 pub(crate) mod api;
+pub(crate) mod profiles;
 mod store;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,6 +27,7 @@ pub use api::CloudError;
 use api::{
     Api, ApprovedLink, DeviceView, LinkStartResponse, OtpSendResult, OtpVerifyResult, PollResult,
 };
+use profiles::{ProfileView, Registry, Switch};
 use store::{CloudFile, KeyringStore, SecretStore, KEY_ACCESS, KEY_DEVICE, KEY_REFRESH};
 
 /// Compile-time default; `None` disables the feature for builds without it.
@@ -73,6 +76,9 @@ pub struct CloudStateView {
     pub linked_at: Option<String>,
     pub telemetry_enabled: bool,
     pub pending_link: Option<PendingLinkView>,
+    /// The shop on this computer that is open now (see `profiles`).
+    pub profile_id: Option<String>,
+    pub shop_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,7 +94,12 @@ pub enum LinkPollView {
     Pending,
     // Boxed: the view is ~200 bytes and `Pending` carries nothing. Serde
     // serializes a `Box` exactly like its contents, so the JSON is unchanged.
-    Linked { state: Box<CloudStateView> },
+    Linked {
+        state: Box<CloudStateView>,
+        /// The approval was for another shop: this computer moved to that shop's
+        /// own data and the app is about to restart.
+        switched: bool,
+    },
 }
 
 pub struct CloudState {
@@ -102,6 +113,9 @@ pub struct CloudState {
     /// refreshing at once would present the same one twice and the identity
     /// service would revoke the session as stolen.
     refresh_lock: tokio::sync::Mutex<()>,
+    /// Set once a shop switch has changed the link: the running sidecars still
+    /// hold the previous shop's database, so nothing may sync until the restart.
+    restart_pending: AtomicBool,
 }
 
 /// Payload of the usage ping. Strictly these fields - nothing about the shop,
@@ -152,6 +166,7 @@ impl CloudState {
             build_url,
             pending: Mutex::new(None),
             refresh_lock: tokio::sync::Mutex::new(()),
+            restart_pending: AtomicBool::new(false),
         }
     }
 
@@ -175,6 +190,7 @@ impl CloudState {
 
     pub fn view(&self) -> CloudStateView {
         let file = CloudFile::load(&self.dir);
+        let registry = Registry::load(&self.dir).ok();
         let pending = self.pending.lock().unwrap();
         CloudStateView {
             enabled: self.base_url(&file).is_some(),
@@ -192,6 +208,8 @@ impl CloudState {
                 interval: p.interval,
                 expires_in: p.expires_in,
             }),
+            profile_id: registry.as_ref().map(|r| r.active_id.clone()),
+            shop_name: registry.and_then(|r| r.active().shop_name.clone()),
         }
     }
 
@@ -199,6 +217,25 @@ impl CloudState {
     /// `CLOUD_DISABLED` / `NOT_LINKED` so the agent simply stays idle.
     pub fn sync_session(&self) -> Result<SyncSession, CloudError> {
         let (base, file) = self.enabled()?;
+        if self.restart_pending.load(Ordering::SeqCst) {
+            return Err(CloudError::new(
+                "SWITCHING_SHOP",
+                "switching shop; the app is restarting",
+                0,
+            ));
+        }
+        // A shop's database may only ever sync with that shop.
+        let reg = Registry::load(&self.dir)?;
+        let bound = reg.active().tenant_id.as_deref();
+        let linked_elsewhere =
+            file.tenant_id.is_some() && bound.is_some() && bound != file.tenant_id.as_deref();
+        if reg.switching.is_some() || linked_elsewhere {
+            return Err(CloudError::new(
+                "SHOP_MISMATCH",
+                "this link does not belong to the open shop",
+                0,
+            ));
+        }
         let sync_base = file
             .sync_api_url
             .as_deref()
@@ -372,6 +409,63 @@ impl CloudState {
         Ok(())
     }
 
+    /// Finishes an approved link and keeps it with the right shop. If the
+    /// approval is for a different shop than the open one, the open shop's link
+    /// is parked and this computer moves to the approved shop's own profile (its
+    /// own database); returns `true` then, and the caller restarts the app.
+    fn complete_link(
+        &self,
+        approved: ApprovedLink,
+        account_email: Option<String>,
+        account_name: Option<String>,
+    ) -> Result<bool, CloudError> {
+        let tenant = approved.tenant_id.clone();
+        let shop_name = approved.shop_name.clone();
+        let mut reg = Registry::load(&self.dir)?;
+        let switch = reg.switch_target(&tenant);
+        let switched = switch != Switch::Stay;
+        reg.begin_new_link(&self.dir, self.secrets.as_ref(), switch, &tenant)?;
+        self.finalize_link(approved, account_email, account_name)?;
+        reg.finish_new_link(&self.dir, &CloudFile::load(&self.dir), shop_name)?;
+        if switched {
+            self.restart_pending.store(true, Ordering::SeqCst);
+        }
+        Ok(switched)
+    }
+
+    /// Drops a link request that is still waiting for approval. Unlike `unlink`
+    /// it never touches the shop this computer is linked to, so cancelling a
+    /// "switch shop" leaves the open shop exactly as it was.
+    pub fn cancel_link(&self) -> CloudStateView {
+        *self.pending.lock().unwrap() = None;
+        self.view()
+    }
+
+    /// Opens another shop that is already on this computer. The caller restarts
+    /// the app afterwards so the sidecars open that shop's database.
+    pub async fn activate_profile(&self, id: &str) -> Result<(), CloudError> {
+        let _guard = self.refresh_lock.lock().await;
+        let mut reg = Registry::load(&self.dir)?;
+        if reg.active_id == id {
+            return Err(CloudError::new(
+                "ALREADY_ACTIVE",
+                "this shop is already open",
+                0,
+            ));
+        }
+        reg.activate(&self.dir, self.secrets.as_ref(), id)?;
+        *self.pending.lock().unwrap() = None;
+        self.restart_pending.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn profiles(&self) -> Result<Vec<ProfileView>, CloudError> {
+        Ok(profiles::views(
+            &Registry::load(&self.dir)?,
+            &CloudFile::load(&self.dir),
+        ))
+    }
+
     /// In-app path: sign in with email/password, then link this device. An
     /// authenticated start is normally approved immediately, so poll briefly;
     /// if it is still pending the UI keeps polling via `link_poll`.
@@ -393,6 +487,15 @@ impl CloudState {
         }
         .cloned()
         .ok_or_else(|| CloudError::new("NO_TENANT", "this account has no shop to link", 0))?;
+        // Signing in here would overwrite the open shop's tokens before the link
+        // is approved. Switching to another shop goes through the browser link.
+        if Registry::load(&self.dir)?.switch_target(&tenant.tenant_id) != Switch::Stay {
+            return Err(CloudError::new(
+                "SWITCH_NEEDS_BROWSER",
+                "this computer is set up for another shop; use the browser sign-in to switch",
+                0,
+            ));
+        }
         self.store_tokens(&login.access_token, &login.refresh_token)?;
 
         let account_email = Some(if login.account.email.is_empty() {
@@ -412,7 +515,8 @@ impl CloudState {
         for _ in 0..3 {
             match api.link_poll(&start.device_code).await? {
                 PollResult::Approved(approved) => {
-                    self.finalize_link(approved, account_email, login.account.name.clone())?;
+                    let _guard = self.refresh_lock.lock().await;
+                    self.complete_link(approved, account_email, login.account.name.clone())?;
                     return Ok(self.view());
                 }
                 PollResult::Pending => {
@@ -469,9 +573,11 @@ impl CloudState {
         match api.link_poll(&device_code).await? {
             PollResult::Pending => Ok(LinkPollView::Pending),
             PollResult::Approved(approved) => {
-                self.finalize_link(approved, account_email, account_name)?;
+                let _guard = self.refresh_lock.lock().await;
+                let switched = self.complete_link(approved, account_email, account_name)?;
                 Ok(LinkPollView::Linked {
                     state: Box::new(self.view()),
+                    switched,
                 })
             }
         }
@@ -824,10 +930,70 @@ pub async fn cloud_link_poll(
 ) -> Result<LinkPollView, CloudError> {
     let call = CommandLog::start("cloud_link_poll", json!({}));
     let res = state.link_poll().await;
-    if let Ok(LinkPollView::Linked { .. }) = &res {
-        if let Some(sync) = app.try_state::<crate::sync::SyncManager>() {
-            sync.wake();
+    match &res {
+        // Another shop: the running sidecars still hold the previous shop's
+        // database, so do not sync; restart onto the new shop's own data.
+        Ok(LinkPollView::Linked { switched: true, .. }) => restart_soon(app.clone()),
+        Ok(LinkPollView::Linked { .. }) => {
+            if let Some(sync) = app.try_state::<crate::sync::SyncManager>() {
+                sync.wake();
+            }
         }
+        _ => {}
+    }
+    call.finish(res)
+}
+
+/// Start-up: finishes an interrupted shop switch (see `profiles::recover`).
+pub fn recover_profiles(dir: &Path) -> Result<(), CloudError> {
+    // Folders from before profiles are about to move; a sidecar left running by
+    // a previous version would still hold them open.
+    if dir.join("db").exists() {
+        crate::orchestrator::reap_orphan_sidecars();
+    }
+    profiles::recover(dir, &KeyringStore).map(|_| ())
+}
+
+/// Stops the sidecars and relaunches the app shortly after, so the webview can
+/// show "switching" first. Tauri's `restart` skips `RunEvent::Exit`, so the
+/// sidecars are stopped here explicitly.
+fn restart_soon(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        LogEvent::shell("lifecycle", "app.restart_for_shop_switch").emit();
+        app.state::<crate::orchestrator::Sidecars>().kill_all();
+        crate::orchestrator::reap_orphan_sidecars();
+        if let Some(hub) = crate::logging::hub::hub() {
+            hub.flush_blocking(Duration::from_secs(2));
+        }
+        app.restart();
+    });
+}
+
+/// Cancels a link request that is waiting for approval (keeps any existing link).
+#[tauri::command]
+pub fn cloud_link_cancel(state: State<'_, CloudState>) -> Result<CloudStateView, CloudError> {
+    let call = CommandLog::start("cloud_link_cancel", json!({}));
+    call.finish(Ok(state.cancel_link()))
+}
+
+/// The shops on this computer.
+#[tauri::command]
+pub fn profiles_list(state: State<'_, CloudState>) -> Result<Vec<ProfileView>, CloudError> {
+    state.profiles()
+}
+
+/// Opens another shop that is already on this computer, then restarts the app.
+#[tauri::command]
+pub async fn profile_activate(
+    app: AppHandle,
+    state: State<'_, CloudState>,
+    id: String,
+) -> Result<(), CloudError> {
+    let call = CommandLog::start("profile_activate", json!({ "id": id }));
+    let res = state.activate_profile(&id).await;
+    if res.is_ok() {
+        restart_soon(app);
     }
     call.finish(res)
 }
@@ -900,6 +1066,8 @@ mod tests {
             r#"{"installation_id":"inst_test1234"}"#,
         )
         .unwrap();
+        // Start-up always leaves a registry behind (see `profiles::recover`).
+        Registry::migrate(dir.path()).unwrap();
         let secrets = Arc::new(MemoryStore::default());
         let state = CloudState::with_parts(
             dir.path().to_path_buf(),
@@ -921,7 +1089,7 @@ mod tests {
 
     fn approved_body() -> Value {
         json!({ "deviceId": "dev_1", "tenantId": "tnt_1", "shopCode": "myshop",
-                "accessToken": "acc_1", "refreshToken": "ref_1" })
+                "shopName": "My Shop", "accessToken": "acc_1", "refreshToken": "ref_1" })
     }
 
     #[tokio::test]
@@ -1197,7 +1365,7 @@ mod tests {
             LinkPollView::Pending
         ));
         match f.state.link_poll().await.unwrap() {
-            LinkPollView::Linked { state } => {
+            LinkPollView::Linked { state, .. } => {
                 assert!(state.linked);
                 assert_eq!(state.tenant_id.as_deref(), Some("tnt_1"));
                 assert_eq!(state.shop_code.as_deref(), Some("myshop"));
@@ -1297,6 +1465,213 @@ mod tests {
         assert!(view.linked);
         assert_eq!(view.account_email.as_deref(), Some("o@shop.lk"));
         assert_eq!(f.secrets.get(KEY_ACCESS).unwrap().as_deref(), Some("acc_1"));
+    }
+
+    /// A computer linked to `tnt_old` (with tokens), and a server that approves
+    /// the next link request for `tenant`.
+    async fn switching_fixture(tenant: &str) -> (Fixture, MockServer) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/devices/link/start"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(start_body()))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/devices/link/poll"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "deviceId": "dev_new", "tenantId": tenant, "shopCode": "new-shop",
+                "shopName": "New Shop", "accessToken": "acc_new", "refreshToken": "ref_new"
+            })))
+            .mount(&server)
+            .await;
+        let f = fixture(Some(server.uri()));
+        CloudFile {
+            device_id: Some("dev_old".into()),
+            tenant_id: Some("tnt_old".into()),
+            shop_code: Some("old-shop".into()),
+            account_email: Some("old@shop.lk".into()),
+            ..Default::default()
+        }
+        .save(f.dir.path())
+        .unwrap();
+        f.secrets.set(KEY_ACCESS, "acc_old").unwrap();
+        f.secrets.set(KEY_REFRESH, "ref_old").unwrap();
+        // Start-up builds the registry from the existing link.
+        Registry::migrate(f.dir.path()).unwrap();
+        (f, server)
+    }
+
+    async fn approve_next_link(f: &Fixture) -> LinkPollView {
+        f.state.link_start().await.unwrap();
+        f.state.link_poll().await.unwrap()
+    }
+
+    /// The profile that was open before any switch (set up by `switching_fixture`).
+    fn open_profile(f: &Fixture) -> String {
+        Registry::load(f.dir.path()).unwrap().active_id
+    }
+
+    #[tokio::test]
+    async fn approving_another_shop_moves_to_its_own_profile_and_parks_the_old_link() {
+        let (f, _server) = switching_fixture("tnt_new").await;
+        let old = open_profile(&f);
+        match approve_next_link(&f).await {
+            LinkPollView::Linked { state, switched } => {
+                assert!(switched);
+                assert_eq!(state.tenant_id.as_deref(), Some("tnt_new"));
+                assert_ne!(state.profile_id.as_deref(), Some(old.as_str()));
+                assert!(state.profile_id.is_some());
+                assert_eq!(state.shop_name.as_deref(), Some("New Shop"));
+            }
+            LinkPollView::Pending => panic!("expected linked"),
+        }
+        // The new shop's tokens are active; the old shop's are kept, not lost.
+        assert_eq!(
+            f.secrets.get(KEY_ACCESS).unwrap().as_deref(),
+            Some("acc_new")
+        );
+        assert_eq!(
+            f.secrets
+                .get(&format!("access_token@{old}"))
+                .unwrap()
+                .as_deref(),
+            Some("acc_old")
+        );
+        assert_eq!(f.state.profiles().unwrap().len(), 2);
+        // The running sidecars still hold the old database: nothing may sync.
+        assert_eq!(f.state.sync_session().unwrap_err().code, "SWITCHING_SHOP");
+        // The old shop's database folder is untouched and the new one is separate.
+        let reg = Registry::load(f.dir.path()).unwrap();
+        assert_ne!(reg.active_id, old);
+        assert_eq!(
+            reg.dirs_for(f.dir.path(), &old).db_dir,
+            f.dir.path().join("shops").join(&old).join("db")
+        );
+        assert_ne!(
+            reg.active_dirs(f.dir.path()).db_dir,
+            reg.dirs_for(f.dir.path(), &old).db_dir
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_switch_keeps_the_open_shop_linked() {
+        let (f, _server) = switching_fixture("tnt_new").await;
+        f.state.link_start().await.unwrap();
+        assert!(f.state.view().pending_link.is_some());
+        let view = f.state.cancel_link();
+        assert!(view.pending_link.is_none());
+        assert!(view.linked);
+        assert_eq!(view.tenant_id.as_deref(), Some("tnt_old"));
+        assert_eq!(
+            f.secrets.get(KEY_ACCESS).unwrap().as_deref(),
+            Some("acc_old")
+        );
+    }
+
+    #[tokio::test]
+    async fn approving_the_same_shop_again_does_not_switch() {
+        let (f, _server) = switching_fixture("tnt_old").await;
+        let old = open_profile(&f);
+        match approve_next_link(&f).await {
+            LinkPollView::Linked { switched, state } => {
+                assert!(!switched);
+                assert_eq!(state.profile_id.as_deref(), Some(old.as_str()));
+            }
+            LinkPollView::Pending => panic!("expected linked"),
+        }
+        assert_eq!(f.state.profiles().unwrap().len(), 1);
+        assert!(f.state.sync_session().is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_first_link_of_an_offline_install_binds_its_data_to_that_shop() {
+        let (f, _server) = switching_fixture("tnt_new").await;
+        // Offline install: nothing linked, nothing bound yet.
+        CloudFile::default().save(f.dir.path()).unwrap();
+        let old = Registry::migrate(f.dir.path()).unwrap().active_id;
+        match approve_next_link(&f).await {
+            LinkPollView::Linked { switched, .. } => assert!(!switched),
+            LinkPollView::Pending => panic!("expected linked"),
+        }
+        let reg = Registry::load(f.dir.path()).unwrap();
+        assert_eq!(reg.active_id, old);
+        assert_eq!(reg.active().tenant_id.as_deref(), Some("tnt_new"));
+    }
+
+    #[tokio::test]
+    async fn a_shop_id_with_path_characters_from_the_server_stays_out_of_paths() {
+        let (f, _server) = switching_fixture("../evil").await;
+        assert!(matches!(
+            approve_next_link(&f).await,
+            LinkPollView::Linked { switched: true, .. }
+        ));
+        let reg = Registry::load(f.dir.path()).unwrap();
+        let db = reg.active_dirs(f.dir.path()).db_dir;
+        assert!(db.starts_with(f.dir.path().join("shops")));
+        assert!(!db.to_string_lossy().contains("evil"));
+    }
+
+    #[tokio::test]
+    async fn switching_back_restores_the_old_shop_and_refuses_the_open_one() {
+        let (f, _server) = switching_fixture("tnt_new").await;
+        let old = open_profile(&f);
+        approve_next_link(&f).await;
+        let new = open_profile(&f);
+        let err = f.state.activate_profile(&new).await.unwrap_err();
+        assert_eq!(err.code, "ALREADY_ACTIVE");
+        f.state.activate_profile(&old).await.unwrap();
+        assert_eq!(
+            f.secrets.get(KEY_ACCESS).unwrap().as_deref(),
+            Some("acc_old")
+        );
+        let file = CloudFile::load(f.dir.path());
+        assert_eq!(file.tenant_id.as_deref(), Some("tnt_old"));
+        assert_eq!(file.device_id.as_deref(), Some("dev_old"));
+        let err = f.state.activate_profile("nope").await.unwrap_err();
+        assert_eq!(err.code, "PROFILE_NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn password_sign_in_will_not_overwrite_another_shops_tokens() {
+        let (f, server) = switching_fixture("tnt_new").await;
+        Mock::given(method("POST"))
+            .and(path("/v1/auth/login"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "acc_login", "refreshToken": "ref_login",
+                "account": { "email": "o@shop.lk" },
+                "tenants": [ { "tenantId": "tnt_new", "shopCode": "new-shop", "name": "New Shop" } ]
+            })))
+            .mount(&server)
+            .await;
+        let err = f
+            .state
+            .login_and_link("o@shop.lk", "password1", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "SWITCH_NEEDS_BROWSER");
+        assert_eq!(
+            f.secrets.get(KEY_ACCESS).unwrap().as_deref(),
+            Some("acc_old")
+        );
+    }
+
+    #[test]
+    fn a_link_that_belongs_to_another_shop_than_the_open_one_never_syncs() {
+        let f = fixture(Some("https://cloud.test".into()));
+        CloudFile {
+            device_id: Some("dev_1".into()),
+            tenant_id: Some("tnt_b".into()),
+            ..Default::default()
+        }
+        .save(f.dir.path())
+        .unwrap();
+        let mut reg = Registry::migrate(f.dir.path()).unwrap();
+        reg.profiles[0].tenant_id = Some("tnt_a".into());
+        reg.save(f.dir.path()).unwrap();
+        assert_eq!(f.state.sync_session().unwrap_err().code, "SHOP_MISMATCH");
+        reg.profiles[0].tenant_id = Some("tnt_b".into());
+        reg.save(f.dir.path()).unwrap();
+        assert!(f.state.sync_session().is_ok());
     }
 
     #[tokio::test]

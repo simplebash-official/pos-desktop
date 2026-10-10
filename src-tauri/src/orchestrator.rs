@@ -646,9 +646,18 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
         .resource_dir()
         .map_err(|e| format!("no resource dir: {e}"))?;
 
-    let db_dir = data_dir.join("db");
-    let assets_dir = data_dir.join("assets");
-    let generated_docs = data_dir.join("generated_documents");
+    // Each shop on this computer has its own database, assets and documents
+    // (see `cloud::profiles`); the first one keeps today's folders.
+    let registry =
+        crate::cloud::profiles::Registry::load(&data_dir).map_err(|e| format!("shops: {e}"))?;
+    if registry.switching.is_some() {
+        return Err("shops: an interrupted shop switch could not be finished".to_string());
+    }
+    let crate::cloud::profiles::ProfileDirs {
+        db_dir,
+        assets_dir,
+        generated_docs,
+    } = registry.active_dirs(&data_dir);
     for dir in [&db_dir, &assets_dir, &generated_docs] {
         fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     }

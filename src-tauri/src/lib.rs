@@ -222,6 +222,9 @@ pub fn run() {
             cloud::cloud_link_open_browser,
             cloud::cloud_link_poll,
             cloud::cloud_unlink,
+            cloud::cloud_link_cancel,
+            cloud::profiles_list,
+            cloud::profile_activate,
             cloud::cloud_list_devices,
             cloud::cloud_revoke_device,
             cloud::cloud_set_telemetry,
@@ -285,6 +288,13 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("simplebash-pos"));
+            // Finish a shop switch that a crash interrupted, before anything reads the link.
+            if let Err(err) = cloud::recover_profiles(&cloud_dir) {
+                LogEvent::shell("lifecycle", "profiles.recover_failed")
+                    .level(Level::Error)
+                    .msg(err.to_string())
+                    .emit();
+            }
             app.manage(cloud::CloudState::new(cloud_dir.clone(), version.clone()));
             // Sync agent: managed always (its commands resolve), runs only when
             // cloud sync is enabled and the device is linked.
