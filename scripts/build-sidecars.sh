@@ -3,7 +3,7 @@
 # triple and stages them (plus the Typst templates/fonts) where Tauri's
 # bundler expects them:
 #   src-tauri/binaries/simplebash-<svc>-<triple>[.exe]   (bundle.externalBin)
-#   src-tauri/resources/{templates,fonts}/              (bundle.resources)
+#   src-tauri/resources/{templates.pack,fonts/}         (bundle.resources)
 #
 # Run automatically by `tauri build` via beforeBuildCommand; run manually
 # before `tauri dev` (the sidecars must exist for a dev run too).
@@ -37,11 +37,28 @@ if [ -z "$EXE" ] && command -v strip >/dev/null 2>&1; then
 fi
 
 echo "==> staging Typst templates + fonts"
-rm -rf "$RES_DIR/templates" "$RES_DIR/fonts"
-cp -R "$ROOT/document-server/templates" "$RES_DIR/templates"
-cp -R "$ROOT/document-server/fonts" "$RES_DIR/fonts"
+rm -rf "$RES_DIR/templates" "$RES_DIR/templates.pack" "$RES_DIR/fonts"
+# The real designs are private (simplebash-official/document-templates): CI
+# checks it out into ./document-templates, the dev workspace has it at
+# ../document-templates. Without it (forks, fresh clones) the public examples ship.
+TPL_DIR="$(mktemp -d)"
+trap 'rm -rf "$TPL_DIR"' EXIT
+PRIVATE_TPL=""
+for d in "$ROOT/document-templates" "$ROOT/../document-templates"; do
+  [ -d "$d/documents" ] && { PRIVATE_TPL="$d"; break; }
+done
+if [ -n "$PRIVATE_TPL" ]; then
+  "$ROOT/document-server/scripts/assemble-templates.sh" "$PRIVATE_TPL" "$TPL_DIR"
+else
+  echo "    (no document-templates/ checkout: bundling the public example templates)"
+  cp -R "$ROOT/document-server/templates/." "$TPL_DIR/"
+fi
 # runtime doesn't need the docs
-find "$RES_DIR/templates" -name 'CLAUDE.md' -delete 2>/dev/null || true
+find "$TPL_DIR" -name 'CLAUDE.md' -delete 2>/dev/null || true
+# One AES zip instead of plain files (key: $TEMPLATES_PACK_KEY, else the dev key).
+cargo run --release --quiet --manifest-path "$ROOT/scripts/pack-templates/Cargo.toml" -- \
+  "$TPL_DIR" "$RES_DIR/templates.pack"
+cp -R "$ROOT/document-server/fonts" "$RES_DIR/fonts"
 
 echo "==> done"
 ls -la "$BIN_DIR"

@@ -59,6 +59,7 @@ jobs:
             src-tauri
             backend
             document-server
+            scripts/pack-templates
 
       - name: Build sidecars + stage Typst assets
         run: bash scripts/build-sidecars.sh

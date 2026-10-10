@@ -247,6 +247,46 @@ fn copy_dir_merge(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Must match `DEV_KEY` in `scripts/pack-templates` (forks and local builds).
+const DEV_TEMPLATES_PACK_KEY: &str = "simplebash-dev-templates";
+/// Key for `resources/templates.pack`, baked in at compile time like
+/// `CLOUD_API_URL`. Obfuscation only: it keeps the designs out of the
+/// installer as plain files, but anyone with the app binary has the key.
+const TEMPLATES_PACK_KEY: &str = match option_env!("TEMPLATES_PACK_KEY") {
+    Some(key) if !key.is_empty() => key,
+    _ => DEV_TEMPLATES_PACK_KEY,
+};
+
+/// Extract the AES zip written by `scripts/pack-templates` into `dst`, with
+/// `copy_dir_merge` semantics: overwrite bundled files, keep extra ones.
+fn unpack_templates(pack: &Path, dst: &Path, key: &str) -> std::io::Result<()> {
+    let mut archive = zip::ZipArchive::new(fs::File::open(pack)?)?;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index_decrypt(i, key.as_bytes())?;
+        // Rejects absolute paths and `..`, so a pack can't write outside `dst`.
+        let Some(rel) = entry.enclosed_name() else {
+            return Err(std::io::Error::other(format!(
+                "unsafe path in template pack: {}",
+                entry.name()
+            )));
+        };
+        let to = dst.join(rel);
+        if entry.is_dir() {
+            fs::create_dir_all(&to)?;
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // Read fully before writing: AES entries are authenticated at EOF, so
+        // a wrong key fails here instead of leaving a half-written file.
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+        fs::write(&to, bytes)?;
+    }
+    Ok(())
+}
+
 /// Lay down (or refresh, on version change) the writable copy of the Typst
 /// templates + fonts. document-server writes into its templates dir at
 /// runtime, so it cannot point at the read-only resource bundle.
@@ -261,6 +301,10 @@ fn sync_render_assets(
         return Ok(());
     }
     let started = Instant::now();
+    let pack = resource_dir.join("resources").join("templates.pack");
+    if pack.is_file() {
+        unpack_templates(&pack, &assets_dir.join("templates"), TEMPLATES_PACK_KEY)?;
+    }
     for name in ["templates", "fonts"] {
         let src = resource_dir.join("resources").join(name);
         if src.is_dir() {
@@ -718,4 +762,84 @@ pub fn fatal(app: &AppHandle, message: &str) {
         .blocking_show();
     app.state::<Sidecars>().kill_all();
     app.exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    /// Same layout and options as `scripts/pack-templates`.
+    fn write_pack(path: &Path, files: &[(&str, &str)], key: &str) {
+        let mut zip = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        let opts = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .with_aes_encryption(zip::AesMode::Aes256, key);
+        for (name, body) in files {
+            zip.start_file(*name, opts).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn sync_render_assets_unpacks_templates_and_keeps_shop_added_ones() {
+        let res = tempfile::tempdir().unwrap();
+        let assets = tempfile::tempdir().unwrap();
+        fs::create_dir_all(res.path().join("resources/fonts")).unwrap();
+        fs::write(res.path().join("resources/fonts/a.ttf"), "font").unwrap();
+        write_pack(
+            &res.path().join("resources/templates.pack"),
+            &[
+                ("documents/doc_temp_x.typ", "new design"),
+                ("lib/money.typ", "lib"),
+            ],
+            TEMPLATES_PACK_KEY,
+        );
+        let templates = assets.path().join("templates");
+        fs::create_dir_all(templates.join("documents")).unwrap();
+        fs::write(templates.join("documents/doc_temp_x.typ"), "old design").unwrap();
+        fs::write(templates.join("documents/doc_temp_shop.typ"), "shop's own").unwrap();
+
+        sync_render_assets(res.path(), assets.path(), "1.2.3").unwrap();
+
+        let read = |p: &str| fs::read_to_string(templates.join(p)).unwrap();
+        assert_eq!(read("documents/doc_temp_x.typ"), "new design");
+        assert_eq!(read("lib/money.typ"), "lib");
+        assert_eq!(read("documents/doc_temp_shop.typ"), "shop's own");
+        assert_eq!(
+            fs::read_to_string(assets.path().join("fonts/a.ttf")).unwrap(),
+            "font"
+        );
+        assert_eq!(
+            fs::read_to_string(assets.path().join(".version")).unwrap(),
+            "1.2.3"
+        );
+    }
+
+    #[test]
+    fn unpack_templates_with_wrong_key_fails_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("templates.pack");
+        write_pack(
+            &pack,
+            &[("documents/doc_temp_x.typ", "design")],
+            "right key",
+        );
+        let out = dir.path().join("out");
+
+        assert!(unpack_templates(&pack, &out, "wrong key").is_err());
+        assert!(!out.join("documents/doc_temp_x.typ").exists());
+    }
+
+    #[test]
+    fn unpack_templates_rejects_paths_outside_the_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let pack = dir.path().join("templates.pack");
+        write_pack(&pack, &[("../escape.typ", "x")], "k");
+
+        assert!(unpack_templates(&pack, &dir.path().join("out"), "k").is_err());
+        assert!(!dir.path().join("escape.typ").exists());
+    }
 }

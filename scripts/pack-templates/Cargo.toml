@@ -1,0 +1,12 @@
+[package]
+name = "pack-templates"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone (not part of src-tauri) so build-sidecars.sh can run it before the
+# shell, whose build script needs the packed resources to already exist.
+[dependencies]
+# zip turns off flate2's default backend; this turns it back on (as src-tauri does).
+flate2 = "1"
+zip = { version = "4", default-features = false, features = ["deflate-flate2", "aes-crypto"] }
