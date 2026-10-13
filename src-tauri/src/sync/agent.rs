@@ -47,6 +47,7 @@ pub const BLOCK_NAMES: &[(&str, u64)] = &[
     ("printJob", 100),
     ("purchase", 100),
     ("barcode", 200),
+    ("quotation", 20),
 ];
 
 /// Block size for a `sku:<prefix>` family — smaller than invoice/etc. since
@@ -2031,15 +2032,22 @@ mod tests {
         fn names(v: Vec<(&'static str, u64)>) -> Vec<&'static str> {
             v.into_iter().map(|(n, _)| n).collect()
         }
-        // Every cycle: invoice is >= 60% used; printJob/purchase/barcode are missing.
+        // Every cycle: invoice is >= 60% used; printJob/purchase/barcode/quotation are missing.
         assert_eq!(
             names(blocks_due(&have, BLOCK_NAMES, false)),
-            vec!["invoice", "printJob", "purchase", "barcode"]
+            vec!["invoice", "printJob", "purchase", "barcode", "quotation"]
         );
         // Periodic check also tops up creditNote (<= 50% left), not repair (90%).
         assert_eq!(
             names(blocks_due(&have, BLOCK_NAMES, true)),
-            vec!["invoice", "creditNote", "printJob", "purchase", "barcode"]
+            vec![
+                "invoice",
+                "creditNote",
+                "printJob",
+                "purchase",
+                "barcode",
+                "quotation"
+            ]
         );
     }
 
