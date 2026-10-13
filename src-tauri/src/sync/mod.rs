@@ -84,6 +84,10 @@ const LOCAL_RETRY_CAP: Duration = Duration::from_secs(15);
 /// Safety-net cycle while both realtime streams are connected: they announce
 /// every change, so the timer only does the periodic work.
 const LIVE_IDLE_INTERVAL: Duration = Duration::from_secs(60);
+/// How often a suspended device asks the cloud again whether it was reinstated. Suspension is a
+/// business decision (a late payment), not a fault, so there is no point asking every few seconds;
+/// "Sync now" still asks at once.
+const SUSPENDED_RETRY: Duration = Duration::from_secs(60 * 60);
 /// After a realtime wake, how long to gather further wakes into one run
 /// (a sale writes several rows in quick succession).
 const COALESCE: Duration = Duration::from_millis(30);
@@ -175,6 +179,9 @@ fn local_client() -> reqwest::Client {
         .expect("static local client configuration is valid")
 }
 
+/// What a suspended shop is told. Nothing here is lost: the app works as before, only the cloud is off.
+const SUSPENDED_MESSAGE: &str = "Cloud sync is paused for this shop. SimpleBash keeps working on this computer and nothing is lost. Contact SimpleBash to restore cloud access.";
+
 /// What the Sync screen says about a failure, in plain words. The technical
 /// code stays in the activity log (`sync/cycle.failed`).
 fn friendly_error(e: &SyncError) -> String {
@@ -186,6 +193,7 @@ fn friendly_error(e: &SyncError) -> String {
             "Your cloud sign-in has expired. Link this computer again under Cloud Account."
                 .to_string()
         }
+        ErrorKind::Suspended => SUSPENDED_MESSAGE.to_string(),
         _ => e.to_string(),
     }
 }
@@ -257,10 +265,12 @@ pub fn init(app: &tauri::App, handle: &AppHandle, data_dir: PathBuf) {
 }
 
 fn cloud_error_to_sync(e: crate::cloud::CloudError) -> SyncError {
-    let kind = if e.code == "NETWORK_ERROR" {
-        ErrorKind::Offline
-    } else {
-        ErrorKind::Unauthorized
+    let kind = match e.code.as_str() {
+        "NETWORK_ERROR" => ErrorKind::Offline,
+        // Identity refuses the refresh of a suspended account. The tokens stay in the keychain, so
+        // reinstating needs no new sign-in; this must not read as "your sign-in expired".
+        "ACCOUNT_SUSPENDED" => ErrorKind::Suspended,
+        _ => ErrorKind::Unauthorized,
     };
     SyncError::new(kind, &e.code, e.message, e.status)
 }
@@ -404,6 +414,23 @@ async fn supervise(handle: AppHandle) {
                         ctl.update(|s| s.last_error = Some(e.message.clone()));
                         ctl.pause();
                         wakes.full = true;
+                        continue;
+                    }
+                    ErrorKind::Suspended => {
+                        // Not a fault and not a sign-in problem: keep the link, the tokens and
+                        // every local row, show it plainly, and ask again only now and then.
+                        ctl.push_history(
+                            HistoryKind::Suspended,
+                            0,
+                            0,
+                            Some(SUSPENDED_MESSAGE.to_string()),
+                        );
+                        ctl.update(|s| {
+                            s.state = SyncPhase::Suspended;
+                            s.last_error = Some(SUSPENDED_MESSAGE.to_string());
+                        });
+                        ctl.set_next_retry(Some(SUSPENDED_RETRY));
+                        wakes = wait_out_backoff(&ctl, SUSPENDED_RETRY).await;
                         continue;
                     }
                     ErrorKind::Offline => {
@@ -617,5 +644,34 @@ mod tests {
             assert_eq!(body, "ok");
         }
         assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_suspended_account_is_not_an_expired_sign_in() {
+        use crate::cloud::CloudError;
+        let suspended = cloud_error_to_sync(CloudError::new("ACCOUNT_SUSPENDED", "off", 403));
+        assert_eq!(suspended.kind, ErrorKind::Suspended);
+        assert_eq!(suspended.code, "ACCOUNT_SUSPENDED");
+        // Everything else keeps its meaning.
+        assert_eq!(
+            cloud_error_to_sync(CloudError::new("NETWORK_ERROR", "x", 0)).kind,
+            ErrorKind::Offline
+        );
+        assert_eq!(
+            cloud_error_to_sync(CloudError::new("TOKEN_INVALID", "x", 401)).kind,
+            ErrorKind::Unauthorized
+        );
+    }
+
+    #[test]
+    fn the_suspended_message_reassures_instead_of_asking_to_sign_in_again() {
+        let e = SyncError::new(ErrorKind::Suspended, "ACCOUNT_SUSPENDED", "off", 403);
+        let text = friendly_error(&e);
+        assert!(text.contains("nothing is lost"), "{text}");
+        assert!(
+            !text.to_lowercase().contains("link this computer"),
+            "{text}"
+        );
+        assert!(!text.to_lowercase().contains("expired"), "{text}");
     }
 }

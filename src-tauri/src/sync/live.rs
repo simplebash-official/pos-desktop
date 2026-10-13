@@ -30,6 +30,8 @@ const LOCAL_RETRY: (Duration, Duration) = (Duration::from_millis(500), Duration:
 const CLOUD_RETRY: (Duration, Duration) = (Duration::from_secs(1), Duration::from_secs(30));
 /// A cloud without the events endpoint (older deployment): look again rarely.
 const CLOUD_UNSUPPORTED_RETRY: Duration = Duration::from_secs(300);
+/// How long the cloud stream waits before asking again while the shop is suspended.
+const CLOUD_SUSPENDED_RETRY: Duration = Duration::from_secs(60 * 60);
 
 /// One parsed server-sent event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +178,8 @@ pub async fn run_cloud(api: CloudSyncApi, ctl: Arc<SyncControl>) {
             }
             // An older cloud without the endpoint: the timer keeps syncing.
             Err(e) if e.status == 404 || e.status == 405 => CLOUD_UNSUPPORTED_RETRY,
+            // Suspended: the sync loop already asks now and then, so the stream waits as long.
+            Err(e) if e.kind == ErrorKind::Suspended => CLOUD_SUSPENDED_RETRY,
             Err(_) => {
                 failures += 1;
                 backoff(failures, CLOUD_RETRY)

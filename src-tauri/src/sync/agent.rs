@@ -507,6 +507,15 @@ impl Agent {
     /// the user confirmed). Pages go to the local backend one by one; the last
     /// one carries the snapshot's sequence as the new cursor.
     pub async fn bootstrap(&self) -> Result<(), SyncError> {
+        // A device that has synced before holds work the cloud may not have yet: sales rung up
+        // offline, for example during a long suspension, after the last upload. Replacing the
+        // local data would erase them, so upload first and replace nothing if that fails. A device
+        // that never synced (cursor 0, nothing uploaded) is the user choosing the cloud copy over
+        // data that was never shared, which is exactly what its confirmation asked about.
+        let state = self.local.state().await?;
+        if state.cloud_cursor > 0 || state.last_pushed_outbox_seq > 0 {
+            self.push_all(&state).await?;
+        }
         // The final page tells the local backend whether the cloud shop is already
         // set up, so a freshly created shop still gets its demo-vs-clean choice.
         let cloud = self.cloud.status().await?;
@@ -1541,6 +1550,142 @@ mod tests {
             body_of(&f.local, "/api/sync/apply").await.is_empty(),
             "nothing may be applied or wiped"
         );
+    }
+
+    /// Mounts what a `bootstrap()` needs from the cloud and the local backend, with `outbox` as the
+    /// unsent local work and `(cursor, pushed)` as the device's sync position.
+    async fn bootstrap_fixture(cursor: i64, pushed: i64, unsent: &[i64]) -> Fixture {
+        let f = fixture().await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(state(cursor, pushed)))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(outbox(unsent)))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/outbox/ack"))
+            .respond_with(ok(json!({})))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/status"))
+            .respond_with(ok(json!({ "serverSeq": 40, "compactedThroughSeq": 30 })))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/snapshot"))
+            .respond_with(ok(
+                json!({ "asOfSeq": 40, "changes": [ { "resource": "products", "key": "prod_1" } ], "nextPage": null }),
+            ))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/apply"))
+            .respond_with(ok(json!({ "applied": 1, "cursor": 40 })))
+            .mount(&f.local)
+            .await;
+        f
+    }
+
+    #[tokio::test]
+    async fn replacing_local_data_after_a_long_gap_uploads_unsent_work_first() {
+        let f = bootstrap_fixture(5, 3, &[4, 6]).await;
+        Mock::given(method("POST")).and(path("/api/sync/push"))
+            .respond_with(ok(json!({ "acks": [ { "key": "prod_4", "status": "applied" }, { "key": "prod_6", "status": "applied" } ], "serverSeq": 41 })))
+            .mount(&f.cloud).await;
+
+        f.agent.bootstrap().await.unwrap();
+
+        assert_eq!(
+            body_of(&f.cloud, "/api/sync/push").await.len(),
+            1,
+            "the unsent sales went up"
+        );
+        assert_eq!(
+            body_of(&f.local, "/api/sync/outbox/ack").await[0]["upToSeq"],
+            6
+        );
+        let applies = body_of(&f.local, "/api/sync/apply").await;
+        assert_eq!(
+            applies[0]["mode"], "bootstrap",
+            "and only then was local data replaced"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_data_is_not_replaced_when_the_upload_before_it_fails() {
+        // The cloud is suspended again (or down): nothing may be wiped.
+        let f = bootstrap_fixture(5, 3, &[4, 6]).await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/push"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({ "code": "ACCOUNT_SUSPENDED", "message": "off" })),
+            )
+            .mount(&f.cloud)
+            .await;
+
+        let err = f.agent.bootstrap().await.unwrap_err();
+
+        assert_eq!(err.kind, ErrorKind::Suspended);
+        assert!(
+            body_of(&f.local, "/api/sync/apply").await.is_empty(),
+            "no snapshot page may be applied after a failed upload"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_that_never_synced_replaces_its_data_without_uploading() {
+        // Cursor 0 and nothing uploaded: the user chose the cloud copy over data never shared.
+        let f = bootstrap_fixture(0, 0, &[4]).await;
+
+        f.agent.bootstrap().await.unwrap();
+
+        assert!(body_of(&f.cloud, "/api/sync/push").await.is_empty());
+        assert_eq!(
+            body_of(&f.local, "/api/sync/apply").await[0]["mode"],
+            "bootstrap"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_suspended_cloud_ends_the_cycle_without_touching_local_data() {
+        let f = fixture().await;
+        Mock::given(method("POST"))
+            .and(path("/api/sync/devices/register"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .set_body_json(json!({ "code": "ACCOUNT_SUSPENDED", "message": "off" })),
+            )
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(state(5, 3)))
+            .mount(&f.local)
+            .await;
+
+        let err = f.agent.cycle().await.unwrap_err();
+
+        assert_eq!(err.kind, ErrorKind::Suspended);
+        assert_eq!(err.code, "ACCOUNT_SUSPENDED");
+        for local_write in [
+            "/api/sync/apply",
+            "/api/sync/outbox/ack",
+            "/api/sync/outbox/seed",
+        ] {
+            assert!(
+                body_of(&f.local, local_write).await.is_empty(),
+                "{local_write} must not be called"
+            );
+        }
+        assert!(!f.agent.ctl.snapshot().bootstrap_required);
+        // A 403 is not a stale token: no second attempt with a forced refresh.
+        assert!(f.forced.lock().unwrap().iter().all(|forced| !forced));
     }
 
     #[tokio::test]
