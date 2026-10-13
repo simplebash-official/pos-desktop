@@ -81,7 +81,14 @@ jobs:
           git commit -m "chore(release): ${TAG} [skip ci]"
           git tag -a "${TAG}" -m "SimpleBash POS desktop ${TAG}"
           git push origin HEAD:main
-          git push origin "${TAG}"
+          # GitHub occasionally reports a tag push as "remote rejected (failed)" while
+          # still creating it (seen on v1.8.0); retry, and accept it if the tag landed.
+          for i in 1 2 3; do
+            git push origin "${TAG}" && break
+            [ "$(git ls-remote origin "refs/tags/${TAG}^{}" | cut -f1)" = "$(git rev-parse HEAD)" ] && break
+            [ "$i" = 3 ] && exit 1
+            sleep 5
+          done
 
   desktop:
     needs: prepare
