@@ -42,6 +42,10 @@ pub enum ErrorKind {
     Local,
     /// A 4xx that retrying will not fix.
     Invalid,
+    /// The shop owner's cloud access was switched off (`ACCOUNT_SUSPENDED`, for example for
+    /// non-payment). Not a sign-in problem: keep the link and the tokens, keep every local row,
+    /// pause quietly and look again only now and then; reinstating needs nothing from the user.
+    Suspended,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -685,6 +689,7 @@ fn classify(status: u16, body: &str) -> SyncError {
         410 => ErrorKind::CursorExpired,
         401 => ErrorKind::Unauthorized,
         403 if e.code == "DEVICE_REVOKED" => ErrorKind::Revoked,
+        403 if e.code == "ACCOUNT_SUSPENDED" => ErrorKind::Suspended,
         403 => ErrorKind::Unauthorized,
         // A concurrent retry of the same batch is still running on the cloud.
         409 if e.code == "IDEMPOTENCY_IN_PROGRESS" => ErrorKind::Server,
@@ -716,6 +721,10 @@ mod tests {
             classify(403, r#"{"code":"NOPE"}"#).kind,
             ErrorKind::Unauthorized
         );
+        // A suspended account is neither an expired sign-in nor a revoked device.
+        let suspended = classify(403, r#"{"code":"ACCOUNT_SUSPENDED","message":"off"}"#);
+        assert_eq!(suspended.kind, ErrorKind::Suspended);
+        assert_eq!(suspended.code, "ACCOUNT_SUSPENDED");
         assert_eq!(classify(503, "").kind, ErrorKind::Server);
         assert_eq!(classify(429, "").kind, ErrorKind::Server);
         assert_eq!(classify(422, "").kind, ErrorKind::Invalid);

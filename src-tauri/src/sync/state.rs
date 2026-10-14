@@ -19,6 +19,8 @@ pub enum SyncPhase {
     Offline,
     Error,
     Paused,
+    /// The owner's cloud access is switched off; everything local keeps working.
+    Suspended,
 }
 
 /// What the agent is doing right now, in finer detail than `SyncPhase`.
@@ -117,6 +119,7 @@ pub enum HistoryKind {
     Error,
     Paused,
     Resumed,
+    Suspended,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -379,11 +382,14 @@ impl SyncControl {
         message: Option<String>,
     ) {
         self.update(|s| {
-            if matches!(kind, HistoryKind::Offline | HistoryKind::Error)
-                && s.history
-                    .first()
-                    .map(|h| h.kind == kind && h.message == message)
-                    .unwrap_or(false)
+            if matches!(
+                kind,
+                HistoryKind::Offline | HistoryKind::Error | HistoryKind::Suspended
+            ) && s
+                .history
+                .first()
+                .map(|h| h.kind == kind && h.message == message)
+                .unwrap_or(false)
             {
                 return;
             }
@@ -588,6 +594,28 @@ mod tests {
         ctl.resume();
         let kinds: Vec<_> = ctl.snapshot().history.iter().map(|h| h.kind).collect();
         assert_eq!(kinds, vec![HistoryKind::Resumed, HistoryKind::Paused]);
+    }
+
+    #[test]
+    fn a_repeated_suspension_notice_is_one_history_line() {
+        let ctl = SyncControl::new(Arc::new(Recorder::default()));
+        for _ in 0..3 {
+            ctl.push_history(HistoryKind::Suspended, 0, 0, Some("paused".into()));
+        }
+        let kinds: Vec<_> = ctl.snapshot().history.iter().map(|h| h.kind).collect();
+        assert_eq!(kinds, vec![HistoryKind::Suspended]);
+    }
+
+    #[test]
+    fn the_suspended_phase_serializes_for_the_webview() {
+        assert_eq!(
+            serde_json::to_string(&SyncPhase::Suspended).unwrap(),
+            "\"suspended\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HistoryKind::Suspended).unwrap(),
+            "\"suspended\""
+        );
     }
 
     fn counts(items: &[(&str, u64)]) -> Vec<(String, u64)> {
