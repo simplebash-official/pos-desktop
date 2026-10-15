@@ -137,6 +137,11 @@ commit + tag are ordinary fast-forward pushes, so the pipeline is unaffected. Se
 `.github/RELEASING.md`.
 End-user runbook: `RELEASE.md`.
 
+### Printing
+
+- `printer.rs` — `print_pdf_native`: macOS only, a PDF through PDFKit's system print panel (WKWebView ignores `window.print()`).
+- `label_print/` — **direct label printing**, no dialog: `list_printers` and `print_label_pages(printer, pagesBase64, widthMm, heightMm, dpi, copies)`. The frontend (`shared/print/printService.tsx` → `printLabelPdf`, `nativePrinters.ts`) renders every sticker at the printer's own resolution as a black-and-white PNG; this module validates the arguments (`mod.rs::validate`: printer name, 1-500 PNG pages, label size, dpi 203/300/600, copies 1-99), then macOS/Linux hand the pages to CUPS (`cups.rs`: `/usr/bin/lpstat -e`, `/usr/bin/lp -o media=Custom.<W>x<H>mm -o scaling=100 -o ppi=<dpi>`, always an argument list, files after `--`) and Windows draws them with GDI (`windows_gdi.rs`: `EnumPrintersW`, a custom-paper DEVMODE merged through the driver, `StretchDIBits` 1:1 at the printer's DPI). `bitmap.rs` decodes PNG to BGRA for the Windows path and is tested everywhere. The Windows path cannot be run without a printer driver: CI is Ubuntu-only, so it is compile-checked locally (`cargo check` of `bitmap.rs` + `windows_gdi.rs` in a scratch crate for `x86_64-pc-windows-msvc`; a whole-shell Windows check needs MSVC headers for `ring`) and must be tried on a real Windows label printer before relying on it.
+
 ## Commands
 
 ```bash
