@@ -1,6 +1,7 @@
 mod benchmark;
 mod branding;
 mod cloud;
+mod label_print;
 // `pub` so `examples/log_pipe.rs` can reuse the real ingest + writer pipeline
 // in the command-line logging benchmark. Not part of the app's public API.
 #[doc(hidden)]
@@ -213,6 +214,8 @@ pub fn run() {
             get_installation_info,
             complete_installation_setup,
             printer::print_pdf_native,
+            label_print::list_printers,
+            label_print::print_label_pages,
             cloud::cloud_get_state,
             cloud::cloud_register,
             cloud::cloud_otp_send,
