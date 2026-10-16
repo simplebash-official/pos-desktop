@@ -34,7 +34,14 @@ for sub in $(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' | aw
   url="${org_url}/${rel#../}"
   tmp=$(mktemp -d)
   git init -q --bare "$tmp"
-  git -C "$tmp" fetch -q --filter=tree:0 "$url" "$new" "$old"
+  git -C "$tmp" fetch -q --filter=tree:0 "$url" "$new"
+  # An old pin the app repo never published (a local commit that was rebased
+  # before the push) never shipped anything, so leaving it cannot drop code.
+  if ! git -C "$tmp" fetch -q --filter=tree:0 "$url" "$old" 2>/dev/null; then
+    echo "::warning::${sub} was pinned to ${old:0:7}, which ${url} does not have; the new pin ${new:0:7} replaces it."
+    rm -rf "$tmp"
+    continue
+  fi
   if git -C "$tmp" merge-base --is-ancestor "$old" "$new"; then
     echo "ok: ${sub} pin moves forward ${old:0:7} -> ${new:0:7}"
   else
