@@ -53,6 +53,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Latest main, not the event SHA: runs queue behind the `release` concurrency
+          # group, so an earlier run's chore(release) commit may already be on main and
+          # pushing from the stale SHA is rejected (non-fast-forward).
+          ref: main
           fetch-depth: 0            # full history + tags for next-version + changelog
           persist-credentials: true # keep the GITHUB_TOKEN credential for the push below
 
