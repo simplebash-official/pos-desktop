@@ -33,7 +33,6 @@ use crate::logging::ingest::{self, Stream};
 use crate::logging::{redact, Level, LogEvent};
 
 pub(crate) const BACKEND_PORT: u16 = 8080;
-const DOCUMENT_SERVER_PORT: u16 = 8090;
 pub(crate) const LOOPBACK: &str = "127.0.0.1";
 
 /// Child sidecar handles, killed when the app event loop exits.
@@ -445,6 +444,17 @@ fn source_for_bin(bin: &str) -> &'static str {
         .map_or("sidecar", |spec| spec.source)
 }
 
+/// A currently free loopback port (small bind-then-release race, acceptable locally).
+fn free_loopback_port() -> std::io::Result<u16> {
+    Ok(std::net::TcpListener::bind((LOOPBACK, 0))?.local_addr()?.port())
+}
+
+impl SidecarSpec {
+    fn port_in(&self, ctx: &SidecarCtx) -> u16 {
+        self.port.unwrap_or(ctx.document_server_port)
+    }
+}
+
 /// Everything a sidecar's environment may depend on.
 pub struct SidecarCtx {
     db_dir: PathBuf,
@@ -455,6 +465,10 @@ pub struct SidecarCtx {
     version: String,
     log: LogConfig,
     boot_id: String,
+    /// Picked fresh each launch: only the backend talks to the document-server,
+    /// and a fixed :8090 can be shared with a Docker stack whose different key
+    /// then rejects some of our requests.
+    document_server_port: u16,
 }
 
 pub struct SidecarSpec {
@@ -462,7 +476,8 @@ pub struct SidecarSpec {
     pub bin: &'static str,
     /// Log `source` label — also its file name under `logs/<day>/`.
     pub source: &'static str,
-    pub port: u16,
+    /// `None` = per-launch free port (`SidecarCtx::document_server_port`).
+    pub port: Option<u16>,
     pub health_path: &'static str,
     pub health_timeout: Duration,
     /// Working directory under `db/`.
@@ -475,7 +490,7 @@ pub const SIDECARS: &[SidecarSpec] = &[
     SidecarSpec {
         bin: "simplebash-document-server",
         source: "document-server",
-        port: DOCUMENT_SERVER_PORT,
+        port: None,
         health_path: "/api/health",
         health_timeout: Duration::from_secs(45),
         cwd: "document-server",
@@ -501,7 +516,7 @@ pub const SIDECARS: &[SidecarSpec] = &[
     SidecarSpec {
         bin: "simplebash-backend",
         source: "backend",
-        port: BACKEND_PORT,
+        port: Some(BACKEND_PORT),
         health_path: "/api/health",
         health_timeout: Duration::from_secs(60),
         cwd: "backend",
@@ -513,7 +528,7 @@ pub const SIDECARS: &[SidecarSpec] = &[
                 ("JWT_EXPIRY_HOURS", "12".into()),
                 (
                     "DOCUMENT_SERVER_URL",
-                    format!("http://{LOOPBACK}:{DOCUMENT_SERVER_PORT}"),
+                    format!("http://{LOOPBACK}:{}", c.document_server_port),
                 ),
                 (
                     "DOCUMENT_SERVER_API_KEY",
@@ -538,7 +553,7 @@ pub const SIDECARS: &[SidecarSpec] = &[
 fn common_envs(spec: &SidecarSpec, ctx: &SidecarCtx) -> Vec<(&'static str, String)> {
     vec![
         ("BIND_ADDR", LOOPBACK.into()),
-        ("PORT", spec.port.to_string()),
+        ("PORT", spec.port_in(ctx).to_string()),
         ("LOG_FORMAT", "json".into()),
         ("LOG_SOURCE", spec.source.into()),
         ("LOG_BOOT_ID", ctx.boot_id.clone()),
@@ -587,7 +602,7 @@ fn spawn_sidecar(
     })?;
     LogEvent::shell("sidecar", "spawned")
         .msg(format!("started {} (pid {})", spec.bin, child.pid()))
-        .data(json!({ "sidecar": spec.bin, "pid": child.pid(), "cwd": cwd, "port": spec.port, "env": env_log }))
+        .data(json!({ "sidecar": spec.bin, "pid": child.pid(), "cwd": cwd, "port": spec.port_in(ctx), "env": env_log }))
         .emit();
 
     let app_for_task = app.clone();
@@ -685,29 +700,30 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
         version,
         log: hub.config(),
         boot_id: hub.context().boot_id,
+        document_server_port: free_loopback_port().map_err(|e| format!("pick port: {e}"))?,
     };
 
     for spec in SIDECARS {
         // Something else on this port (a Docker backend on :8080, say) would also answer
         // the health check below, so say so in the log. Never block startup over it.
-        if tokio::net::TcpStream::connect((LOOPBACK, spec.port))
+        let port = spec.port_in(&ctx);
+        if tokio::net::TcpStream::connect((LOOPBACK, port))
             .await
             .is_ok()
         {
             LogEvent::shell("sidecar", "port_busy")
                 .level(Level::Warn)
                 .msg(format!(
-                    "another program already answers on {LOOPBACK}:{}",
-                    spec.port
+                    "another program already answers on {LOOPBACK}:{port}"
                 ))
-                .data(json!({ "sidecar": spec.bin, "port": spec.port }))
+                .data(json!({ "sidecar": spec.bin, "port": port }))
                 .emit();
         }
         let child = spawn_sidecar(&app, spec, &ctx)?;
         app.state::<Sidecars>().push(spec.bin, child);
         wait_healthy(
             spec.source,
-            spec.port,
+            port,
             spec.health_path,
             spec.health_timeout,
         )
@@ -778,6 +794,13 @@ mod tests {
     use super::*;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
+
+    #[test]
+    fn free_loopback_port_is_bindable() {
+        let port = free_loopback_port().unwrap();
+        assert!(port > 0);
+        std::net::TcpListener::bind((LOOPBACK, port)).unwrap();
+    }
 
     /// Same layout and options as `scripts/pack-templates`.
     fn write_pack(path: &Path, files: &[(&str, &str)], key: &str) {
