@@ -197,7 +197,13 @@ jobs:
         # Sidecars and frontend were built above; `beforeBuildCommand: null`
         # stops tauri from re-running them with the signing key in the env.
         shell: bash
-        run: npm run tauri build -- --config '{"build":{"beforeBuildCommand":null}}'
+        # bundle_dmg.sh (hdiutil) intermittently fails on macOS runners; retry the bundle.
+        run: |
+          for i in 1 2 3; do
+            npm run tauri build -- --config '{"build":{"beforeBuildCommand":null}}' && exit 0
+            echo "tauri build failed (attempt $i/3)"; sleep 10
+          done
+          exit 1
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
