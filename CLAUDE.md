@@ -36,6 +36,13 @@ A task is not done until everything in this codebase that *can* be tested, and e
 
 **This repo's gate:** in `src-tauri/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`; plus the gate of every app repo you changed, run in its working copy (`pos/backend`, `pos/frontend`, `pos/document-server`). Shell behaviour (sidecars, sync agent, updater) is checked by running the app.
 
+**Run all of these before you say a task is finished** (a backend feature once reached CI with clippy errors, a permission that was too wide and undocumented routes, none of which a partial run catches):
+
+1. `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` on the current stable Rust (`rustup update` first). This is exactly what CI runs; `cargo clippy --fix --allow-dirty` clears most of it. `cargo build`/`cargo test` alone do not run clippy.
+2. `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and the **whole** `cargo test` in `src-tauri/` (`--no-fail-fast`), plus the full gate of every app repo you changed (`pos/backend`, `pos/document-server`, `pos/frontend`), run in its working copy.
+3. Shell behaviour (sidecars, sync agent, updater) is checked by running the app, not only by tests.
+4. After pushing, watch the run (`gh run list --limit 3`, `gh run view <id> --log-failed`) until it is green. Pushing is a separate, deliberate step, so ask first.
+
 ## Repository layout (read before editing)
 
 The workspace has **two checkouts of the same backend/frontend/document-server repos**:
