@@ -14,7 +14,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -42,9 +42,23 @@ pub struct Sidecars {
     /// Set once we start stopping them, so their exit is logged as expected
     /// rather than as a crash.
     stopping: AtomicBool,
+    /// Loopback port of this launch's document-server; 0 until it was picked.
+    document_server_port: AtomicU16,
 }
 
 impl Sidecars {
+    fn set_document_server_port(&self, port: u16) {
+        self.document_server_port.store(port, Ordering::Relaxed);
+    }
+
+    /// The document-server's port, once the orchestrator has chosen it.
+    pub fn document_server_port(&self) -> Option<u16> {
+        match self.document_server_port.load(Ordering::Relaxed) {
+            0 => None,
+            port => Some(port),
+        }
+    }
+
     fn push(&self, name: &'static str, child: CommandChild) {
         self.children.lock().unwrap().push((name, child));
     }
@@ -119,6 +133,16 @@ pub fn read_jwt_secret(data_dir: &Path) -> Option<String> {
     serde_json::from_str::<Secrets>(&raw)
         .ok()
         .map(|s| s.jwt_secret)
+        .filter(|s| !s.is_empty())
+}
+
+/// The document-server `INTERNAL_API_KEY` from `config.json`, for the package
+/// sync to call it. `None` until the orchestrator has created it.
+pub fn read_internal_api_key(data_dir: &Path) -> Option<String> {
+    let raw = fs::read_to_string(data_dir.join("config.json")).ok()?;
+    serde_json::from_str::<Secrets>(&raw)
+        .ok()
+        .map(|s| s.internal_api_key)
         .filter(|s| !s.is_empty())
 }
 
@@ -446,7 +470,9 @@ fn source_for_bin(bin: &str) -> &'static str {
 
 /// A currently free loopback port (small bind-then-release race, acceptable locally).
 fn free_loopback_port() -> std::io::Result<u16> {
-    Ok(std::net::TcpListener::bind((LOOPBACK, 0))?.local_addr()?.port())
+    Ok(std::net::TcpListener::bind((LOOPBACK, 0))?
+        .local_addr()?
+        .port())
 }
 
 impl SidecarSpec {
@@ -702,6 +728,8 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
         boot_id: hub.context().boot_id,
         document_server_port: free_loopback_port().map_err(|e| format!("pick port: {e}"))?,
     };
+    app.state::<Sidecars>()
+        .set_document_server_port(ctx.document_server_port);
 
     for spec in SIDECARS {
         // Something else on this port (a Docker backend on :8080, say) would also answer
@@ -721,13 +749,7 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
         }
         let child = spawn_sidecar(&app, spec, &ctx)?;
         app.state::<Sidecars>().push(spec.bin, child);
-        wait_healthy(
-            spec.source,
-            port,
-            spec.health_path,
-            spec.health_timeout,
-        )
-        .await?;
+        wait_healthy(spec.source, port, spec.health_path, spec.health_timeout).await?;
     }
 
     reveal_main_window(&app)?;
@@ -848,6 +870,54 @@ mod tests {
             fs::read_to_string(assets.path().join(".version")).unwrap(),
             "1.2.3"
         );
+    }
+
+    /// Custom designs live in `templates/packages/` and are not part of the
+    /// bundle: refreshing the bundled templates on an app update must keep them.
+    #[test]
+    fn sync_render_assets_keeps_installed_design_packages() {
+        let res = tempfile::tempdir().unwrap();
+        let assets = tempfile::tempdir().unwrap();
+        fs::create_dir_all(res.path().join("resources")).unwrap();
+        write_pack(
+            &res.path().join("resources/templates.pack"),
+            &[("documents/doc_temp_x.typ", "new design")],
+            TEMPLATES_PACK_KEY,
+        );
+        let package = assets
+            .path()
+            .join("templates/packages/doc_temp_aaaaaaaaaaaaaaaa");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("template.typ"), "custom").unwrap();
+        fs::write(package.join("package.zip"), "zip").unwrap();
+        fs::write(assets.path().join(".version"), "1.0.0").unwrap();
+
+        sync_render_assets(res.path(), assets.path(), "1.2.3").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(package.join("template.typ")).unwrap(),
+            "custom"
+        );
+        assert_eq!(
+            fs::read_to_string(package.join("package.zip")).unwrap(),
+            "zip"
+        );
+        assert_eq!(
+            fs::read_to_string(assets.path().join("templates/documents/doc_temp_x.typ")).unwrap(),
+            "new design"
+        );
+    }
+
+    #[test]
+    fn the_internal_api_key_is_read_from_config_json() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_internal_api_key(dir.path()), None);
+        fs::write(
+            dir.path().join("config.json"),
+            r#"{"jwt_secret":"j","internal_api_key":"k"}"#,
+        )
+        .unwrap();
+        assert_eq!(read_internal_api_key(dir.path()).as_deref(), Some("k"));
     }
 
     #[test]

@@ -134,6 +134,50 @@ pub struct HistoryEntry {
 
 pub const HISTORY_LIMIT: usize = 20;
 
+/// Where the shop's custom document designs stand (see `crate::packages`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PackagesPhase {
+    /// Nothing has been checked yet in this session.
+    NotChecked,
+    UpToDate,
+    /// Designs are being downloaded.
+    Pending,
+    /// Some designs need a newer version of this app than the one installed.
+    NeedsAppUpdate,
+    Error,
+    /// The shop's cloud access is switched off; the designs already here keep working.
+    Paused,
+}
+
+/// Counters and a timestamp only: part of every `sync://status` payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackagesStatus {
+    pub state: PackagesPhase,
+    /// Custom designs on this computer that the cloud lists for the shop.
+    pub installed: u32,
+    /// Still to download in the current check.
+    pub pending: u32,
+    /// Skipped because they need a newer app version.
+    pub needs_app_update: u32,
+    pub checked_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+impl PackagesStatus {
+    pub fn not_checked() -> Self {
+        Self {
+            state: PackagesPhase::NotChecked,
+            installed: 0,
+            pending: 0,
+            needs_app_update: 0,
+            checked_at: None,
+            last_error: None,
+        }
+    }
+}
+
 /// Payload of the `sync://status` event and of `sync_get_status`. Contains
 /// counters and timestamps only - never a record body or a token.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -159,6 +203,8 @@ pub struct SyncStatus {
     pub next_retry_at: Option<String>,
     /// Newest first, at most `HISTORY_LIMIT`.
     pub history: Vec<HistoryEntry>,
+    /// The shop's custom document designs (downloaded after each full cycle).
+    pub packages: PackagesStatus,
 }
 
 impl Default for SyncStatus {
@@ -177,6 +223,7 @@ impl Default for SyncStatus {
             last_cycle: None,
             next_retry_at: None,
             history: Vec::new(),
+            packages: PackagesStatus::not_checked(),
         }
     }
 }

@@ -50,8 +50,10 @@
 // ---------------------------------------------------------------------------
 
 mod agent;
+mod doc_server;
 mod http;
 mod live;
+mod packages;
 mod state;
 mod token;
 
@@ -65,12 +67,17 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::cloud::{CloudState, SyncSession};
 use crate::logging::{CommandLog, Level, LogEvent};
-use crate::orchestrator::{read_jwt_secret, BACKEND_PORT, LOOPBACK};
+use crate::orchestrator::{
+    read_internal_api_key, read_jwt_secret, Sidecars, BACKEND_PORT, LOOPBACK,
+};
 
 use agent::{Agent, Backoff, ClockSampler, IDLE_INTERVAL, PUSH_PAGE};
+use doc_server::DocumentServerApi;
 use http::{ClockFn, CloudSyncApi, ErrorKind, LocalApi, SecretFn, SyncError, TokenFn};
 pub use state::SyncStatus;
-use state::{HistoryKind, LiveChannel, StatusSink, SyncControl, SyncPhase, SyncStep, Wakes};
+use state::{
+    HistoryKind, LiveChannel, PackagesPhase, StatusSink, SyncControl, SyncPhase, SyncStep, Wakes,
+};
 
 /// Local sync failures at start-up (backend still booting) are not shown as
 /// errors until this many attempts in a row have failed.
@@ -88,6 +95,9 @@ const LIVE_IDLE_INTERVAL: Duration = Duration::from_secs(60);
 /// business decision (a late payment), not a fault, so there is no point asking every few seconds;
 /// "Sync now" still asks at once.
 const SUSPENDED_RETRY: Duration = Duration::from_secs(60 * 60);
+/// How often a running session asks the cloud for the shop's custom document designs
+/// (they change when the owner publishes one, not with every sale).
+const PACKAGES_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// After a realtime wake, how long to gather further wakes into one run
 /// (a sale writes several rows in quick succession).
 const COALESCE: Duration = Duration::from_millis(30);
@@ -222,6 +232,17 @@ impl SyncManager {
         self.ctl.wake_now();
     }
 
+    /// The open shop's document-server, once the sidecar is up and its secret exists.
+    fn document_server_api(&self, handle: &AppHandle) -> Option<DocumentServerApi> {
+        let port = handle.state::<Sidecars>().document_server_port()?;
+        let key = read_internal_api_key(&self.data_dir)?;
+        Some(DocumentServerApi::new(
+            self.local_http.clone(),
+            format!("http://{LOOPBACK}:{port}"),
+            key,
+        ))
+    }
+
     fn local_api(&self) -> LocalApi {
         let dir = self.data_dir.clone();
         let secret: SecretFn = Arc::new(move || read_jwt_secret(&dir));
@@ -302,6 +323,48 @@ fn build_agent(handle: &AppHandle, session: &SyncSession) -> Agent {
     )
 }
 
+/// Brings the shop's custom document designs level with the cloud and reports
+/// the outcome in the sync status. A failure here never fails the data cycle.
+/// False when the local document-server is not ready yet (try again next time).
+async fn sync_packages(handle: &AppHandle, cloud: &CloudSyncApi, ctl: &SyncControl) -> bool {
+    let Some(local) = handle.state::<SyncManager>().document_server_api(handle) else {
+        return false;
+    };
+    let app_version = handle.package_info().version.to_string();
+    let result = packages::run(cloud, &local, &app_version, &|status| {
+        ctl.update(|s| s.packages = status)
+    })
+    .await;
+    match result {
+        Ok(status) => {
+            LogEvent::shell("packages", "sync.done")
+                .data(json!({
+                    "state": status.state, "installed": status.installed,
+                    "needs_app_update": status.needs_app_update,
+                }))
+                .emit();
+            ctl.update(|s| s.packages = status);
+        }
+        Err(e) => {
+            LogEvent::shell("packages", "sync.failed")
+                .level(Level::Warn)
+                .data(json!({ "code": e.code, "kind": e.kind, "status": e.status }))
+                .emit();
+            let message = friendly_error(&e);
+            ctl.update(|s| {
+                s.packages.state = if e.kind == ErrorKind::Suspended {
+                    PackagesPhase::Paused
+                } else {
+                    PackagesPhase::Error
+                };
+                s.packages.last_error = Some(message);
+                s.packages.checked_at = Some(chrono::Utc::now().to_rfc3339());
+            });
+        }
+    }
+    true
+}
+
 /// The agent loop: link check, one cycle, then wait (idle interval, busy
 /// interval, or the backoff schedule after a failure).
 async fn supervise(handle: AppHandle) {
@@ -310,6 +373,7 @@ async fn supervise(handle: AppHandle) {
     let mut failures: u32 = 0;
     let mut current: Option<(SyncSession, Agent, Listeners)> = None;
     let mut was_offline = false;
+    let mut packages_checked: Option<std::time::Instant> = None;
     // The first run after start-up (or a relink) is always a full cycle.
     let mut wakes = Wakes {
         full: true,
@@ -341,6 +405,7 @@ async fn supervise(handle: AppHandle) {
             let listeners = Listeners::start(&agent);
             current = Some((session.clone(), agent, listeners));
             wakes.full = true;
+            packages_checked = None;
         }
         let agent = &current.as_ref().expect("agent was just built").1;
 
@@ -367,7 +432,8 @@ async fn supervise(handle: AppHandle) {
             continue;
         }
 
-        let result = if wakes.full || !(wakes.local || wakes.remote) {
+        let full_cycle = wakes.full || !(wakes.local || wakes.remote);
+        let result = if full_cycle {
             agent.cycle().await
         } else {
             agent.quick(wakes.local, wakes.remote).await
@@ -385,6 +451,12 @@ async fn supervise(handle: AppHandle) {
                 if was_offline {
                     was_offline = false;
                     ctl.push_history(HistoryKind::Online, 0, 0, None);
+                }
+                // Custom designs follow full cycles only (not every sale), and at most
+                // every few minutes; the first full cycle of a session always checks.
+                let due = packages_checked.is_none_or(|t| t.elapsed() >= PACKAGES_INTERVAL);
+                if full_cycle && due && sync_packages(&handle, &agent.cloud, &ctl).await {
+                    packages_checked = Some(std::time::Instant::now());
                 }
                 let pending = ctl.snapshot().pending_out;
                 let live = ctl.live_connected();

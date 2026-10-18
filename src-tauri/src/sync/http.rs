@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 
 use crate::cloud::api::{error_from_body, unwrap_envelope};
 
+use super::packages::{Cloud, RemotePackage};
 use super::token::mint_service_token;
 
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -682,6 +683,74 @@ impl CloudSyncApi {
     }
 }
 
+/// Largest design archive accepted from the cloud (the document-server caps
+/// uploads at 20 MiB).
+const MAX_ARCHIVE_BYTES: usize = 25 * 1024 * 1024;
+
+#[derive(Deserialize)]
+struct Manifest {
+    packages: Vec<RemotePackage>,
+}
+
+impl CloudSyncApi {
+    /// `GET /api/document-packages` as a bearer-authenticated raw call is not
+    /// JSON for the archive, so it has its own loop; the token refresh rule is
+    /// the same as `call`.
+    async fn get_bytes(&self, path: &str) -> Result<Vec<u8>, SyncError> {
+        for attempt in 0..2 {
+            let token = (self.token)(attempt == 1).await?;
+            let resp = self
+                .http
+                .get(format!("{}{}", self.base, path))
+                .timeout(CLOUD_TIMEOUT)
+                .bearer_auth(token)
+                .send()
+                .await
+                .map_err(|e| network_error(ErrorKind::Offline, e))?;
+            let status = resp.status();
+            if status.is_success() {
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .map_err(|e| network_error(ErrorKind::Offline, e))?;
+                if bytes.len() > MAX_ARCHIVE_BYTES {
+                    return Err(SyncError::new(
+                        ErrorKind::Invalid,
+                        "ARCHIVE_TOO_LARGE",
+                        "the design archive is larger than allowed",
+                        status.as_u16(),
+                    ));
+                }
+                return Ok(bytes.to_vec());
+            }
+            let text = resp.text().await.unwrap_or_default();
+            if status.as_u16() == 401 && attempt == 0 {
+                continue;
+            }
+            return Err(classify(status.as_u16(), &text));
+        }
+        Err(SyncError::new(
+            ErrorKind::Unauthorized,
+            "UNAUTHORIZED",
+            "cloud rejected the device token",
+            401,
+        ))
+    }
+}
+
+impl Cloud for CloudSyncApi {
+    async fn manifest(&self) -> Result<Vec<RemotePackage>, SyncError> {
+        self.typed::<Manifest>(Method::GET, "/api/document-packages", &[], None)
+            .await
+            .map(|m| m.packages)
+    }
+
+    async fn archive(&self, name: &str) -> Result<Vec<u8>, SyncError> {
+        self.get_bytes(&format!("/api/document-packages/{name}/archive"))
+            .await
+    }
+}
+
 /// Maps a non-2xx cloud answer to what the agent should do about it.
 fn classify(status: u16, body: &str) -> SyncError {
     let e = error_from_body(status, body);
@@ -741,5 +810,97 @@ mod tests {
         // server 5100 ms vs local midpoint 100 ms -> +5000 ms.
         assert_eq!(server_offset_ms(&headers, sent, received), Some(5000));
         assert_eq!(server_offset_ms(&HeaderMap::new(), sent, received), None);
+    }
+    // ----- custom design packages ------------------------------------------
+
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn api_with_tokens(
+        server: &MockServer,
+        tokens: Arc<std::sync::Mutex<Vec<bool>>>,
+    ) -> CloudSyncApi {
+        let token: TokenFn = Arc::new(move |force| {
+            tokens.lock().unwrap().push(force);
+            Box::pin(async move { Ok(if force { "fresh" } else { "stale" }.to_string()) })
+        });
+        CloudSyncApi::new(
+            reqwest::Client::new(),
+            server.uri(),
+            token,
+            Arc::new(|_| {}),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_manifest_is_read_from_the_envelope_with_the_bearer_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/document-packages"))
+            .and(header("authorization", "Bearer stale"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "success": true,
+                "data": { "packages": [{
+                    "name": "doc_temp_aaaaaaaaaaaaaaaa", "family": "fam_a", "version": 2,
+                    "kind": "a4-invoice", "title": "Client Invoice", "type": "document",
+                    "sha256": "ab", "minAppVersion": null
+                }]}
+            })))
+            .mount(&server)
+            .await;
+        let api = api_with_tokens(&server, Default::default());
+        let manifest = Cloud::manifest(&api).await.unwrap();
+        assert_eq!(manifest.len(), 1);
+        assert_eq!(
+            (manifest[0].version, manifest[0].min_app_version.clone()),
+            (2, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_archive_is_raw_bytes_and_a_401_refreshes_the_token_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/document-packages/doc_temp_aaaaaaaaaaaaaaaa/archive",
+            ))
+            .and(header("authorization", "Bearer stale"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/document-packages/doc_temp_aaaaaaaaaaaaaaaa/archive",
+            ))
+            .and(header("authorization", "Bearer fresh"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0u8, 159, 146, 150]))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let tokens = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let api = api_with_tokens(&server, tokens.clone());
+        let bytes = Cloud::archive(&api, "doc_temp_aaaaaaaaaaaaaaaa")
+            .await
+            .unwrap();
+        assert_eq!(bytes, vec![0u8, 159, 146, 150]);
+        assert_eq!(*tokens.lock().unwrap(), vec![false, true]);
+    }
+
+    #[tokio::test]
+    async fn a_suspended_account_is_reported_as_suspended_for_packages() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/document-packages"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(
+                json!({"success": false, "code": "ACCOUNT_SUSPENDED", "message": "off"}),
+            ))
+            .mount(&server)
+            .await;
+        let api = api_with_tokens(&server, Default::default());
+        assert_eq!(
+            Cloud::manifest(&api).await.unwrap_err().kind,
+            ErrorKind::Suspended
+        );
     }
 }
