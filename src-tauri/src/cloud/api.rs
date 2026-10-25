@@ -145,6 +145,14 @@ struct DevicesListResponse {
     devices: Vec<DeviceView>,
 }
 
+/// How the code reaches the phone. The owner picks one; identity sends on that channel only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OtpChannel {
+    Sms,
+    Whatsapp,
+}
+
 /// What `POST /v1/otp/send` answers. Sent on to the webview as-is (no secret in it).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -253,11 +261,15 @@ impl Api<'_> {
         .await
     }
 
-    /// Texts a 6-digit code to `phone` (a Sri Lankan mobile, any usual way of writing it).
-    pub async fn otp_send(&self, phone: &str) -> Result<OtpSendResult, CloudError> {
+    /// Sends a 6-digit code to `phone` (a Sri Lankan mobile, any usual way of writing it) on `channel`.
+    pub async fn otp_send(
+        &self,
+        phone: &str,
+        channel: OtpChannel,
+    ) -> Result<OtpSendResult, CloudError> {
         self.post_json(
             "/v1/otp/send",
-            &json!({ "phone": phone, "purpose": "signup" }),
+            &json!({ "phone": phone, "purpose": "signup", "channel": channel }),
             None,
         )
         .await

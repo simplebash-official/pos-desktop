@@ -25,7 +25,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::logging::{CommandLog, Level, LogEvent};
 pub use api::CloudError;
 use api::{
-    Api, ApprovedLink, DeviceView, LinkStartResponse, OtpSendResult, OtpVerifyResult, PollResult,
+    Api, ApprovedLink, DeviceView, LinkStartResponse, OtpChannel, OtpSendResult, OtpVerifyResult,
+    PollResult,
 };
 use profiles::{ProfileView, Registry, Switch};
 use store::{CloudFile, KeyringStore, SecretStore, KEY_ACCESS, KEY_DEVICE, KEY_REFRESH};
@@ -300,14 +301,18 @@ impl CloudState {
         Ok(B64.encode(SigningKey::from_bytes(&bytes).verifying_key().to_bytes()))
     }
 
-    /// Texts a one-time code to `phone`. Nothing is stored: the webview keeps the challenge id.
-    pub async fn otp_send(&self, phone: &str) -> Result<OtpSendResult, CloudError> {
+    /// Sends a one-time code to `phone` on `channel`. Nothing is stored: the webview keeps the challenge id.
+    pub async fn otp_send(
+        &self,
+        phone: &str,
+        channel: OtpChannel,
+    ) -> Result<OtpSendResult, CloudError> {
         let (base, _) = self.enabled()?;
         Api {
             http: &self.http,
             base: &base,
         }
-        .otp_send(phone)
+        .otp_send(phone, channel)
         .await
     }
 
@@ -792,9 +797,13 @@ fn mask_phone(phone: &str) -> String {
 pub async fn cloud_otp_send(
     state: State<'_, CloudState>,
     phone: String,
+    channel: OtpChannel,
 ) -> Result<OtpSendResult, CloudError> {
-    let call = CommandLog::start("cloud_otp_send", json!({ "phone": mask_phone(&phone) }));
-    call.finish(state.otp_send(&phone).await)
+    let call = CommandLog::start(
+        "cloud_otp_send",
+        json!({ "phone": mask_phone(&phone), "channel": channel }),
+    );
+    call.finish(state.otp_send(&phone, channel).await)
 }
 
 #[tauri::command]
@@ -1201,7 +1210,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/v1/otp/send"))
             .and(body_partial_json(
-                json!({ "phone": "0771234567", "purpose": "signup" }),
+                json!({ "phone": "0771234567", "purpose": "signup", "channel": "whatsapp" }),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "otpId": "otp_abc", "expiresIn": 300, "resendAfter": 60, "deliveryUncertain": true
@@ -1210,7 +1219,11 @@ mod tests {
             .mount(&server)
             .await;
         let f = fixture(Some(server.uri()));
-        let out = f.state.otp_send("0771234567").await.unwrap();
+        let out = f
+            .state
+            .otp_send("0771234567", OtpChannel::Whatsapp)
+            .await
+            .unwrap();
         assert_eq!(
             (
                 out.otp_id.as_str(),
@@ -1235,7 +1248,7 @@ mod tests {
         let f = fixture(Some(server.uri()));
         assert!(
             !f.state
-                .otp_send("0771234567")
+                .otp_send("0771234567", OtpChannel::Sms)
                 .await
                 .unwrap()
                 .delivery_uncertain
@@ -1282,7 +1295,11 @@ mod tests {
         let f = fixture(Some(server.uri()));
         let err = f.state.otp_verify("otp_abc", "000000").await.unwrap_err();
         assert_eq!((err.code.as_str(), err.status), ("OTP_INVALID", 400));
-        let err = f.state.otp_send("+1 415 555 0100").await.unwrap_err();
+        let err = f
+            .state
+            .otp_send("+1 415 555 0100", OtpChannel::Sms)
+            .await
+            .unwrap_err();
         assert_eq!(
             (err.code.as_str(), err.status),
             ("PHONE_COUNTRY_UNSUPPORTED", 400)
@@ -1300,7 +1317,11 @@ mod tests {
     async fn otp_calls_are_refused_when_cloud_is_off() {
         let f = fixture(None);
         assert_eq!(
-            f.state.otp_send("0771234567").await.unwrap_err().code,
+            f.state
+                .otp_send("0771234567", OtpChannel::Sms)
+                .await
+                .unwrap_err()
+                .code,
             "CLOUD_DISABLED"
         );
         assert_eq!(
