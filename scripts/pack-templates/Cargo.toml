@@ -9,4 +9,4 @@ publish = false
 [dependencies]
 # zip turns off flate2's default backend; this turns it back on (as src-tauri does).
 flate2 = "1"
-zip = { version = "4", default-features = false, features = ["deflate-flate2", "aes-crypto"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2", "aes-crypto"] }
