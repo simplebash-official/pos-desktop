@@ -567,8 +567,33 @@ pub const SIDECARS: &[SidecarSpec] = &[
                 ("RETURN_WINDOW_DAYS", "30".into()),
                 ("AUTO_SEED", "false".into()),
                 ("INSTALLATION_ID", c.installation.installation_id.clone()),
-                ("APP_VERSION", c.version.clone()),
                 ("PLATFORM", std::env::consts::OS.to_string()),
+                // Read by the bundled backend until its submodule moves to the build that
+                // reports its own Cargo version; harmless to the newer one, which ignores it.
+                ("APP_VERSION", c.version.clone()),
+                ("TENANT_MODE", "single".into()),
+                ("APP_ENV", "production".into()),
+                // The desktop webview and the Vite dev server.
+                (
+                    "CORS_ALLOWED_ORIGINS",
+                    "tauri://localhost,http://tauri.localhost,https://tauri.localhost,\
+                     http://localhost:5173,http://127.0.0.1:5173"
+                        .into(),
+                ),
+                ("IDENTITY_AUTH", "disabled".into()),
+                ("PROVISIONING", "disabled".into()),
+                // Seeding is off, so this account is never created; the setup wizard
+                // creates the real one. The value is a secret only to satisfy the config.
+                ("SEED_ADMIN_NAME", "Administrator".into()),
+                ("SEED_ADMIN_PASSWORD", c.secrets.jwt_secret.clone()),
+                ("RATE_LIMIT_BURST", "200".into()),
+                ("RATE_LIMIT_REFILL_PER_SEC", "50".into()),
+                ("RATE_LIMIT_SENSITIVE_BURST", "20".into()),
+                ("RATE_LIMIT_SENSITIVE_REFILL_PER_SEC", "0.5".into()),
+                ("RATE_LIMIT_LIVE_BURST", "400".into()),
+                ("RATE_LIMIT_LIVE_REFILL_PER_SEC", "100".into()),
+                // `tower_http`'s own trace lines duplicate the structured events.
+                ("LOG_FILTER", "info,tower_http=warn".into()),
             ]
         },
     },

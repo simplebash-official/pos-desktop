@@ -53,7 +53,7 @@
     "externalBin": ["binaries/simplebash-backend", "binaries/simplebash-document-server"],
     "resources": ["resources/templates.pack", "resources/fonts/**/*"],
     "macOS": {
-      "minimumSystemVersion": "10.15",
+      "minimumSystemVersion": "15.0",
       "entitlements": "entitlements.plist"
     },
     "windows": {
