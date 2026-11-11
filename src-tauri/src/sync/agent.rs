@@ -48,6 +48,8 @@ pub const BLOCK_NAMES: &[(&str, u64)] = &[
     ("purchase", 100),
     ("barcode", 200),
     ("quotation", 20),
+    ("session", 20),
+    ("cashMovement", 100),
 ];
 
 /// Block size for a `sku:<prefix>` family — smaller than invoice/etc. since
@@ -112,6 +114,19 @@ impl ClockSampler {
 
 /// Which sequences need a fresh block: missing ones, ones that are 60 % used
 /// up (any cycle), and - on the periodic check - ones at or below half.
+/// Matches block names ignoring ASCII case and underscores so local SQLite's
+/// canonical names (e.g. `"cash_movement"`) satisfy camelCase `BLOCK_NAMES`
+/// entries (`"cashMovement"`).
+fn same_block_name(a: &str, b: &str) -> bool {
+    a.bytes()
+        .filter(|c| *c != b'_')
+        .map(|c| c.to_ascii_lowercase())
+        .eq(b
+            .bytes()
+            .filter(|c| *c != b'_')
+            .map(|c| c.to_ascii_lowercase()))
+}
+
 pub fn blocks_due(
     have: &[BlockInfo],
     wanted: &[(&'static str, u64)],
@@ -120,7 +135,7 @@ pub fn blocks_due(
     wanted
         .iter()
         .filter(
-            |(name, _)| match have.iter().find(|b| b.name.eq_ignore_ascii_case(name)) {
+            |(name, _)| match have.iter().find(|b| same_block_name(&b.name, name)) {
                 None => true,
                 Some(b) if b.block_size == 0 => true,
                 Some(b) => {
@@ -1181,6 +1196,8 @@ mod tests {
         assert!(stored.contains(&"barcode".to_string()), "{stored:?}");
         assert!(stored.contains(&"sku:PHO-SCR".to_string()), "{stored:?}");
         assert!(stored.contains(&"invoice".to_string()), "{stored:?}");
+        assert!(stored.contains(&"session".to_string()), "{stored:?}");
+        assert!(stored.contains(&"cashMovement".to_string()), "{stored:?}");
 
         // The cloud actually saw both the plain and the colon-containing name.
         let reserved: Vec<String> = f
@@ -1194,6 +1211,14 @@ mod tests {
             .collect();
         assert!(
             reserved.contains(&"/api/sequences/barcode/reserve".to_string()),
+            "{reserved:?}"
+        );
+        assert!(
+            reserved.contains(&"/api/sequences/session/reserve".to_string()),
+            "{reserved:?}"
+        );
+        assert!(
+            reserved.contains(&"/api/sequences/cashMovement/reserve".to_string()),
             "{reserved:?}"
         );
         assert!(
@@ -2177,10 +2202,18 @@ mod tests {
         fn names(v: Vec<(&'static str, u64)>) -> Vec<&'static str> {
             v.into_iter().map(|(n, _)| n).collect()
         }
-        // Every cycle: invoice is >= 60% used; printJob/purchase/barcode/quotation are missing.
+        // Every cycle: invoice is >= 60% used; printJob/purchase/barcode/quotation/session/cashMovement are missing.
         assert_eq!(
             names(blocks_due(&have, BLOCK_NAMES, false)),
-            vec!["invoice", "printJob", "purchase", "barcode", "quotation"]
+            vec![
+                "invoice",
+                "printJob",
+                "purchase",
+                "barcode",
+                "quotation",
+                "session",
+                "cashMovement",
+            ]
         );
         // Periodic check also tops up creditNote (<= 50% left), not repair (90%).
         assert_eq!(
@@ -2191,8 +2224,86 @@ mod tests {
                 "printJob",
                 "purchase",
                 "barcode",
-                "quotation"
+                "quotation",
+                "session",
+                "cashMovement",
             ]
+        );
+    }
+
+    #[test]
+    fn cash_movement_and_session_blocks_match_backend_canonical_names() {
+        let healthy = vec![
+            BlockInfo {
+                name: "invoice".into(),
+                remaining: 90,
+                block_size: 100,
+            },
+            BlockInfo {
+                name: "creditnote".into(),
+                remaining: 90,
+                block_size: 100,
+            },
+            BlockInfo {
+                name: "repair".into(),
+                remaining: 90,
+                block_size: 100,
+            },
+            BlockInfo {
+                name: "printjob".into(),
+                remaining: 90,
+                block_size: 100,
+            },
+            BlockInfo {
+                name: "purchase".into(),
+                remaining: 90,
+                block_size: 100,
+            },
+            BlockInfo {
+                name: "barcode".into(),
+                remaining: 180,
+                block_size: 200,
+            },
+            BlockInfo {
+                name: "quotation".into(),
+                remaining: 18,
+                block_size: 20,
+            },
+            BlockInfo {
+                name: "session".into(),
+                remaining: 18,
+                block_size: 20,
+            },
+            BlockInfo {
+                name: "cash_movement".into(),
+                remaining: 90,
+                block_size: 100,
+            },
+        ];
+        assert!(blocks_due(&healthy, BLOCK_NAMES, true).is_empty());
+
+        let due_periodic: Vec<BlockInfo> = healthy
+            .into_iter()
+            .map(|mut b| {
+                if b.name == "session" {
+                    b.remaining = 10;
+                }
+                if b.name == "cash_movement" {
+                    b.remaining = 40;
+                }
+                b
+            })
+            .collect();
+        let names = |v: Vec<(&'static str, u64)>| -> Vec<&'static str> {
+            v.into_iter().map(|(n, _)| n).collect()
+        };
+        assert_eq!(
+            names(blocks_due(&due_periodic, BLOCK_NAMES, false)),
+            vec!["cashMovement"]
+        );
+        assert_eq!(
+            names(blocks_due(&due_periodic, BLOCK_NAMES, true)),
+            vec!["session", "cashMovement"]
         );
     }
 
