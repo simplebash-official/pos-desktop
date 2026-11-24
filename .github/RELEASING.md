@@ -188,7 +188,7 @@ Every `platforms.*` URL must resolve (200) and there must be one entry each for
 
 > Intel Macs are not built — GitHub's `macos-13` runners are being retired and
 > queue for hours. If you need them, add a `universal-apple-darwin` target
-> cross-built on the `macos-14` runner.
+> cross-built on the `macos-15` runner.
 
 Then, on a machine with an **older** version installed: Settings → Updates →
 Check for updates → download → install → restart, and confirm prior sales +
