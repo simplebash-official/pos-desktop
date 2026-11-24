@@ -488,7 +488,6 @@ pub struct SidecarCtx {
     generated_docs: PathBuf,
     secrets: Secrets,
     installation: InstallationRecord,
-    version: String,
     log: LogConfig,
     boot_id: String,
     /// Picked fresh each launch: only the backend talks to the document-server,
@@ -568,9 +567,6 @@ pub const SIDECARS: &[SidecarSpec] = &[
                 ("AUTO_SEED", "false".into()),
                 ("INSTALLATION_ID", c.installation.installation_id.clone()),
                 ("PLATFORM", std::env::consts::OS.to_string()),
-                // Read by the bundled backend until its submodule moves to the build that
-                // reports its own Cargo version; harmless to the newer one, which ignores it.
-                ("APP_VERSION", c.version.clone()),
                 ("TENANT_MODE", "single".into()),
                 ("APP_ENV", "production".into()),
                 // The desktop webview and the Vite dev server.
@@ -582,6 +578,8 @@ pub const SIDECARS: &[SidecarSpec] = &[
                 ),
                 ("IDENTITY_AUTH", "disabled".into()),
                 ("PROVISIONING", "disabled".into()),
+                // Password-reset email is a web feature: the desktop has no email provider.
+                ("EMAIL_SERVICE", "disabled".into()),
                 // Seeding is off, so this account is never created; the setup wizard
                 // creates the real one. The value is a secret only to satisfy the config.
                 ("SEED_ADMIN_NAME", "Administrator".into()),
@@ -748,7 +746,6 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
         generated_docs,
         secrets,
         installation,
-        version,
         log: hub.config(),
         boot_id: hub.context().boot_id,
         document_server_port: free_loopback_port().map_err(|e| format!("pick port: {e}"))?,
@@ -968,5 +965,91 @@ mod tests {
 
         assert!(unpack_templates(&pack, &dir.path().join("out"), "k").is_err());
         assert!(!dir.path().join("escape.typ").exists());
+    }
+
+    /// The sidecar `scripts/build-sidecars.sh` staged for the host: `<bin>-<triple>[.exe]`.
+    fn staged_binary(bin: &str) -> PathBuf {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        let prefix = format!("{bin}-");
+        fs::read_dir(&dir)
+            .unwrap_or_else(|err| panic!("read {}: {err}", dir.display()))
+            .map(|entry| entry.expect("read a directory entry").path())
+            .find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "no staged {bin} in {}; run scripts/build-sidecars.sh",
+                    dir.display()
+                )
+            })
+    }
+
+    /// The backend exits at once when a variable it requires is missing, and the shell only
+    /// notices after the 60 s health timeout. Run the real staged backend with exactly the
+    /// environment `spawn_sidecar` builds, so a new required variable fails here and not in a shop.
+    #[test]
+    fn backend_accepts_the_environment_the_orchestrator_gives_it() {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+
+        let spec = SIDECARS
+            .iter()
+            .find(|spec| spec.source == "backend")
+            .expect("the backend sidecar is declared");
+        let work = tempfile::tempdir().unwrap();
+        let ctx = SidecarCtx {
+            db_dir: work.path().join("db"),
+            assets_dir: work.path().join("assets"),
+            generated_docs: work.path().join("generated_documents"),
+            secrets: Secrets {
+                jwt_secret: hex64(),
+                internal_api_key: hex64(),
+            },
+            installation: InstallationRecord {
+                installation_id: "inst_test".into(),
+                app_version: "0.0.0".into(),
+                platform: std::env::consts::OS.into(),
+                installed_at: "2026-01-01T00:00:00Z".into(),
+                initial_setup_completed: false,
+                sample_data_loaded: None,
+            },
+            log: LogConfig::default(),
+            boot_id: "boot_test".into(),
+            document_server_port: free_loopback_port().unwrap(),
+        };
+        let mut envs = common_envs(spec, &ctx);
+        envs.extend((spec.envs)(&ctx));
+
+        let mut child = Command::new(staged_binary(spec.bin))
+            .current_dir(work.path())
+            .env_clear()
+            .envs(envs)
+            // A dev machine often has something else on the real port.
+            .env("PORT", free_loopback_port().unwrap().to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start the staged backend");
+
+        // Configuration is validated first thing, so a process still alive after this accepted it.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Some(status) = child.try_wait().expect("poll the backend") {
+                let mut stderr = String::new();
+                child
+                    .stderr
+                    .take()
+                    .expect("stderr is piped")
+                    .read_to_string(&mut stderr)
+                    .expect("read the backend's stderr");
+                panic!("the backend exited ({status}) instead of starting:\n{stderr}");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        child.kill().expect("stop the backend");
+        child.wait().expect("reap the backend");
     }
 }
