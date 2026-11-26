@@ -482,40 +482,31 @@ impl Agent {
         Ok(())
     }
 
-    /// Decides what a device that has never synced does. `Ok(false)` means the
-    /// cycle must stop: the shop already has cloud data and this device has its
-    /// own, so nothing is merged or wiped until the user confirms.
+    /// Decides what a device that has never synced does. The outbox cannot tell: `enable` has
+    /// just queued every row, including the ones the local backend creates on every start.
+    /// `Ok(false)` means the cycle must stop: the shop is already set up in the cloud and this
+    /// device has its own data, so nothing is merged or wiped until the user confirms.
     async fn first_sync(&self, state: &LocalState) -> Result<bool, SyncError> {
-        let cloud = self.cloud.status().await?;
-        if cloud.server_seq == 0 {
-            // A shop created on the web has its owner's POS admin in the cloud
-            // tables but no change history yet. A brand-new install that has not
-            // been set up (nothing local to lose) joins it by downloading that,
-            // instead of uploading an empty database and asking for a second admin.
-            if !state.local_has_data
-                && self.local.outbox(0, 1).await?.items.is_empty()
-                && !self.local.setup_completed().await?
-                && !self.cloud.snapshot(None).await?.changes.is_empty()
-            {
-                self.bootstrap().await?;
-                return Ok(true);
-            }
-            // First device of the shop: upload what exists.
-            self.local.seed().await?;
-            return Ok(true);
-        }
-        let already_seeded = !self.local.outbox(0, 1).await?.items.is_empty();
-        if already_seeded {
-            return Ok(true);
-        }
-        if !state.local_has_data {
+        // A download that stopped half way already replaced the local data: finish it.
+        if state.bootstrap_active {
             self.bootstrap().await?;
             return Ok(true);
         }
-        self.ctl.require_bootstrap(
-            "this shop already has data in the cloud and this device has its own; replacing the local data needs confirmation",
-        );
-        Ok(false)
+        if state.local_has_data || self.local.setup_completed().await? {
+            if self.cloud.status().await?.setup_completed {
+                self.ctl.require_bootstrap(
+                    "this shop already has data in the cloud and this device has its own; replacing the local data needs confirmation",
+                );
+                return Ok(false);
+            }
+        } else if !self.cloud.snapshot(None).await?.changes.is_empty() {
+            // Nothing of its own to lose. The download also drops the queued starter rows.
+            self.bootstrap().await?;
+            return Ok(true);
+        }
+        // First device of the shop: upload what exists.
+        self.local.seed().await?;
+        Ok(true)
     }
 
     /// Replaces the local data with the cloud snapshot (empty device, or after
@@ -855,6 +846,14 @@ mod tests {
             "pendingByResource": [ { "resource": "invoices", "count": 2 } ],
             "conflictsByResource": [ { "resource": "products", "count": 2 } ],
         })
+    }
+
+    fn cloud_status(setup_completed: bool, sample_data_loaded: bool) -> Value {
+        json!({ "setupCompleted": setup_completed, "sampleDataLoaded": sample_data_loaded })
+    }
+
+    fn local_setup(setup_completed: bool) -> Value {
+        json!({ "setupCompleted": setup_completed, "sampleDataLoaded": false })
     }
 
     fn outbox(seqs: &[i64]) -> Value {
@@ -1598,7 +1597,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/sync/status"))
-            .respond_with(ok(json!({ "serverSeq": 40, "compactedThroughSeq": 30 })))
+            .respond_with(ok(cloud_status(true, false)))
             .mount(&f.cloud)
             .await;
         Mock::given(method("GET"))
@@ -1724,7 +1723,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/sync/status"))
-            .respond_with(ok(json!({ "serverSeq": 0, "compactedThroughSeq": 0 })))
+            .respond_with(ok(cloud_status(false, false)))
             .mount(&f.cloud)
             .await;
         Mock::given(method("POST"))
@@ -1743,7 +1742,7 @@ mod tests {
         // `expect(1)` is verified when the mock server drops.
     }
 
-    /// A fresh install, a web-created shop that has never synced (`serverSeq` 0).
+    /// A computer with no sales, joining a shop nobody has synced to yet.
     async fn fresh_install_joining_a_never_synced_shop(
         setup_completed: bool,
         snapshot_changes: Value,
@@ -1760,16 +1759,15 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/sync/status"))
-            .respond_with(ok(json!({
-                "serverSeq": 0, "compactedThroughSeq": 0,
-                "setupCompleted": cloud_flags["setupCompleted"].as_bool().unwrap_or(false),
-                "sampleDataLoaded": cloud_flags["sampleDataLoaded"].as_bool().unwrap_or(false),
-            })))
+            .respond_with(ok(cloud_status(
+                cloud_flags["setupCompleted"].as_bool().unwrap_or(false),
+                cloud_flags["sampleDataLoaded"].as_bool().unwrap_or(false),
+            )))
             .mount(&f.cloud)
             .await;
         Mock::given(method("GET"))
             .and(path("/api/system/setup-status"))
-            .respond_with(ok(json!({ "setupCompleted": setup_completed })))
+            .respond_with(ok(local_setup(setup_completed)))
             .mount(&f.local)
             .await;
         Mock::given(method("GET"))
@@ -1815,7 +1813,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_install_that_is_already_set_up_still_seeds_a_never_synced_shop() {
+    async fn an_install_that_is_already_set_up_still_seeds_a_shop_nobody_has_set_up() {
         let f = fresh_install_joining_a_never_synced_shop(
             true,
             json!([{ "resource": "users", "key": "usr_owner" }]),
@@ -1890,7 +1888,7 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/sync/status"))
-            .respond_with(ok(json!({ "setupCompleted": cloud_setup })))
+            .respond_with(ok(cloud_status(cloud_setup, false)))
             .mount(&f.cloud)
             .await;
         Mock::given(method("POST"))
@@ -1959,7 +1957,7 @@ mod tests {
         mount_quiet_cloud(&f).await;
         Mock::given(method("GET"))
             .and(path("/api/sync/status"))
-            .respond_with(ok(json!({ "setupCompleted": false })))
+            .respond_with(ok(cloud_status(false, false)))
             .mount(&f.cloud)
             .await;
         Mock::given(method("POST"))
@@ -1984,7 +1982,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_with_data_joining_a_shop_with_data_waits_for_confirmation() {
+    async fn device_with_data_joining_a_set_up_shop_waits_for_confirmation() {
         let f = fixture().await;
         Mock::given(method("POST"))
             .and(path("/api/sync/devices/register"))
@@ -1998,13 +1996,8 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/sync/status"))
-            .respond_with(ok(json!({ "serverSeq": 12 })))
+            .respond_with(ok(cloud_status(true, false)))
             .mount(&f.cloud)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/sync/outbox"))
-            .respond_with(ok(outbox(&[])))
-            .mount(&f.local)
             .await;
 
         let report = f.agent.cycle().await.unwrap();
@@ -2026,12 +2019,17 @@ mod tests {
             .await;
         Mock::given(method("GET"))
             .and(path("/api/sync/status"))
-            .respond_with(ok(json!({ "serverSeq": 12 })))
+            .respond_with(ok(cloud_status(true, false)))
             .mount(&f.cloud)
             .await;
         Mock::given(method("GET"))
             .and(path("/api/sync/outbox"))
             .respond_with(ok(outbox(&[])))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/system/setup-status"))
+            .respond_with(ok(local_setup(false)))
             .mount(&f.local)
             .await;
         Mock::given(method("GET")).and(path("/api/sync/snapshot")).and(query_param("page", "p2"))
@@ -2055,6 +2053,46 @@ mod tests {
             applies[1]["advanceCursorTo"], 12,
             "cursor is the FIRST page's asOfSeq"
         );
+    }
+
+    #[tokio::test]
+    async fn an_unfinished_first_download_is_resumed_without_asking_again() {
+        // The pages already applied brought sales down, so the database no longer looks empty.
+        let mut half_way = state(0, 0);
+        half_way["bootstrapActive"] = json!(true);
+        let f = fixture().await;
+        mount_quiet_cloud(&f).await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/status"))
+            .respond_with(ok(cloud_status(true, false)))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/snapshot"))
+            .respond_with(ok(
+                json!({ "asOfSeq": 40, "changes": [ { "resource": "products", "key": "prod_1" } ], "nextPage": null }),
+            ))
+            .mount(&f.cloud)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/state"))
+            .respond_with(ok(half_way))
+            .mount(&f.local)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/sync/outbox"))
+            .respond_with(ok(outbox(&[])))
+            .mount(&f.local)
+            .await;
+
+        let report = f.agent.cycle().await.unwrap();
+
+        assert!(!report.bootstrap_required);
+        assert_eq!(
+            body_of(&f.local, "/api/sync/apply").await[0]["mode"],
+            "bootstrap"
+        );
+        assert!(body_of(&f.cloud, "/api/sync/push").await.is_empty());
     }
 
     #[tokio::test]

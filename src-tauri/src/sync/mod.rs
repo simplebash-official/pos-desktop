@@ -21,8 +21,8 @@
 // and may be wrapped in the usual `{success,data}` envelope.
 //
 //   GET  /api/sync/state
-//        -> { deviceId, linked, captureEnabled, cloudCursor, lastPushedOutboxSeq,
-//             clockOffsetMs, pendingOut, conflictsOpen, localHasData,
+//        -> { deviceId, linked, captureEnabled, bootstrapActive, cloudCursor,
+//             lastPushedOutboxSeq, clockOffsetMs, pendingOut, conflictsOpen, localHasData,
 //             numberBlocks: [{ name, remaining, blockSize }] }
 //        (every field optional; missing numbers read as 0 / false)
 //   POST /api/sync/state          { clockOffsetMs }        median server-local ms
@@ -43,7 +43,8 @@
 //
 // CLOUD CALLS (device access token; sync base = cloud.json `syncApiUrl`, or
 // build-time `CLOUD_SYNC_API_URL`, else the identity `apiUrl`):
-//   GET /api/sync/status | POST /api/sync/devices/register | POST /api/sync/push
+//   GET /api/sync/status -> { setupCompleted, sampleDataLoaded }
+//   POST /api/sync/devices/register | POST /api/sync/push
 //   GET /api/sync/pull?since=&limit= | GET /api/sync/snapshot?page=
 //   GET /api/sync/events (SSE) `hello` {latestSeq}, `change` {seq,resource,origin}, `resync`
 //   POST /api/sequences/{name}/reserve
@@ -51,6 +52,8 @@
 
 mod agent;
 mod doc_server;
+#[cfg(test)]
+mod first_sync_tests;
 mod http;
 mod live;
 mod packages;

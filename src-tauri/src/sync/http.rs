@@ -114,6 +114,8 @@ pub struct LocalState {
     pub tenant_id: Option<String>,
     pub linked: bool,
     pub capture_enabled: bool,
+    /// A first download has replaced the local data but not finished yet.
+    pub bootstrap_active: bool,
     pub cloud_cursor: i64,
     pub last_pushed_outbox_seq: i64,
     pub clock_offset_ms: i64,
@@ -154,7 +156,8 @@ pub struct ApplyResult {
 pub type SecretFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// What the local POS says about its own first-run setup.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LocalSetup {
     pub setup_completed: bool,
     pub sample_data_loaded: bool,
@@ -281,14 +284,8 @@ impl LocalApi {
     /// The local POS's first-run state. A fresh install that is still waiting at
     /// the wizard answers `setup_completed: false`.
     pub async fn setup_status(&self) -> Result<LocalSetup, SyncError> {
-        let value = self
-            .call(Method::GET, "/api/system/setup-status", &[], None)
-            .await?;
-        let flag = |key: &str| value.get(key).and_then(Value::as_bool).unwrap_or(false);
-        Ok(LocalSetup {
-            setup_completed: flag("setupCompleted"),
-            sample_data_loaded: flag("sampleDataLoaded"),
-        })
+        self.typed(Method::GET, "/api/system/setup-status", &[], None)
+            .await
     }
 
     /// Whether the local POS has finished its first-run setup.
@@ -415,11 +412,10 @@ pub type TokenFn = Arc<dyn Fn(bool) -> TokenFuture + Send + Sync>;
 /// Receives `server_time - local_time` in ms measured on every cloud response.
 pub type ClockFn = Arc<dyn Fn(i64) + Send + Sync>;
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+/// `GET /api/sync/status` on the cloud.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CloudStatus {
-    pub server_seq: i64,
-    pub compacted_through_seq: i64,
     /// The shop has finished its own first-time setup (demo vs clean data).
     pub setup_completed: bool,
     /// That setup loaded the demo data.
