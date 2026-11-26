@@ -834,9 +834,10 @@ pub fn fatal(app: &AppHandle, message: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Write;
+    use std::process::{Child, Command, Stdio};
     use zip::write::SimpleFileOptions;
 
     #[test]
@@ -986,53 +987,81 @@ mod tests {
             })
     }
 
+    /// The real staged backend with exactly the environment `spawn_sidecar` builds, on a free
+    /// port, with its database under `work`. `env` overrides single variables.
+    pub(crate) struct StagedBackend {
+        pub(crate) child: Child,
+        pub(crate) base_url: String,
+        pub(crate) jwt_secret: String,
+    }
+
+    impl StagedBackend {
+        pub(crate) fn spawn(work: &Path, env: &[(&str, String)]) -> Self {
+            let spec = SIDECARS
+                .iter()
+                .find(|spec| spec.source == "backend")
+                .expect("the backend sidecar is declared");
+            let ctx = SidecarCtx {
+                db_dir: work.join("db"),
+                assets_dir: work.join("assets"),
+                generated_docs: work.join("generated_documents"),
+                secrets: Secrets {
+                    jwt_secret: hex64(),
+                    internal_api_key: hex64(),
+                },
+                installation: InstallationRecord {
+                    installation_id: "inst_test".into(),
+                    app_version: "0.0.0".into(),
+                    platform: std::env::consts::OS.into(),
+                    installed_at: "2026-01-01T00:00:00Z".into(),
+                    initial_setup_completed: false,
+                    sample_data_loaded: None,
+                },
+                log: LogConfig::default(),
+                boot_id: "boot_test".into(),
+                document_server_port: free_loopback_port().unwrap(),
+            };
+            let mut envs = common_envs(spec, &ctx);
+            envs.extend((spec.envs)(&ctx));
+            // A dev machine often has something else on the real port.
+            let port = free_loopback_port().unwrap();
+            let child = Command::new(staged_binary(spec.bin))
+                .current_dir(work)
+                .env_clear()
+                .envs(envs)
+                .env("PORT", port.to_string())
+                .envs(env.iter().map(|(k, v)| (k, v)))
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start the staged backend");
+            Self {
+                child,
+                base_url: format!("http://{LOOPBACK}:{port}"),
+                jwt_secret: ctx.secrets.jwt_secret,
+            }
+        }
+    }
+
+    impl Drop for StagedBackend {
+        fn drop(&mut self) {
+            // Already gone is fine: the test that expects an exit has reported it.
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
     /// The backend exits at once when a variable it requires is missing, and the shell only
     /// notices after the 60 s health timeout. Run the real staged backend with exactly the
     /// environment `spawn_sidecar` builds, so a new required variable fails here and not in a shop.
     #[test]
     fn backend_accepts_the_environment_the_orchestrator_gives_it() {
         use std::io::Read;
-        use std::process::{Command, Stdio};
         use std::time::Instant;
 
-        let spec = SIDECARS
-            .iter()
-            .find(|spec| spec.source == "backend")
-            .expect("the backend sidecar is declared");
         let work = tempfile::tempdir().unwrap();
-        let ctx = SidecarCtx {
-            db_dir: work.path().join("db"),
-            assets_dir: work.path().join("assets"),
-            generated_docs: work.path().join("generated_documents"),
-            secrets: Secrets {
-                jwt_secret: hex64(),
-                internal_api_key: hex64(),
-            },
-            installation: InstallationRecord {
-                installation_id: "inst_test".into(),
-                app_version: "0.0.0".into(),
-                platform: std::env::consts::OS.into(),
-                installed_at: "2026-01-01T00:00:00Z".into(),
-                initial_setup_completed: false,
-                sample_data_loaded: None,
-            },
-            log: LogConfig::default(),
-            boot_id: "boot_test".into(),
-            document_server_port: free_loopback_port().unwrap(),
-        };
-        let mut envs = common_envs(spec, &ctx);
-        envs.extend((spec.envs)(&ctx));
-
-        let mut child = Command::new(staged_binary(spec.bin))
-            .current_dir(work.path())
-            .env_clear()
-            .envs(envs)
-            // A dev machine often has something else on the real port.
-            .env("PORT", free_loopback_port().unwrap().to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("start the staged backend");
+        let mut backend = StagedBackend::spawn(work.path(), &[]);
+        let child = &mut backend.child;
 
         // Configuration is validated first thing, so a process still alive after this accepted it.
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -1049,7 +1078,5 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        child.kill().expect("stop the backend");
-        child.wait().expect("reap the backend");
     }
 }
