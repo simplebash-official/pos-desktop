@@ -17,6 +17,25 @@ processes** on loopback; the webview loads the compiled frontend and talks to
 | `entitlements.plist` | macOS hardened-runtime entitlements (loopback networking, run unsigned-by-Apple sidecars) |
 | `binaries/` | *(gitignored)* sidecar binaries, produced by `scripts/build-sidecars.sh` |
 | `resources/` | *(gitignored)* staged `templates/` + `fonts/` for document-server |
+| `icons/` | app and installer icons, drawn from the web favicon (see below) |
+
+## App icon
+
+The icon is `frontend/public/favicon.svg`. When it changes, regenerate:
+
+- `icons/*.png`, `icon.ico`: `npm run tauri icon` from a 1024px render of the favicon.
+  Render it in a browser: `tauri icon` draws the SVG's `<text>` in the wrong font.
+- `icon.icns` (macOS 15): same command, with the favicon drawn 824px wide, centred on a
+  transparent 1024px canvas, corner radius 185px.
+- `icons/Assets.car` (macOS 26+, keeps the tile yellow in the dark icon style): put a 1024px
+  render of the "S" alone in `AppIcon.icon/Assets/s.png` (colours live in `icon.json`), then,
+  with Xcode 26 or newer, from `icons/`:
+
+  ```bash
+  xcrun actool AppIcon.icon --compile "$(mktemp -d)" --app-icon AppIcon --platform macosx --target-device mac --minimum-deployment-target 15.0 --output-partial-info-plist /dev/null
+  ```
+
+  Copy the `Assets.car` it writes into `icons/`.
 
 ## Runtime data
 

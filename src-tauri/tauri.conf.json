@@ -48,7 +48,8 @@
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
-      "icons/icon.ico"
+      "icons/icon.ico",
+      "icons/Assets.car"
     ],
     "externalBin": ["binaries/simplebash-backend", "binaries/simplebash-document-server"],
     "resources": ["resources/templates.pack", "resources/fonts/**/*"],
@@ -59,6 +60,8 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "installerHooks": "installer-hooks.nsh"
       }
     }
