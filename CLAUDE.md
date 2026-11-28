@@ -23,25 +23,25 @@ Two deployment targets from the same backend/frontend code:
 Each submodule has its own directory-scoped `CLAUDE.md` (`backend/CLAUDE.md` etc.) that loads when
 working under that tree.
 
-## Before finishing any task: test everything that can be tested
+## Testing: related tests while working, the full gate before a push
 
-A task is not done until everything in this codebase that *can* be tested, and everything related to the feature you implemented, has been tested and passes. Not just the lines you changed.
+### While working (every task)
 
-1. **The feature itself:** add or extend automated tests for every behaviour you added or changed (happy path, failure paths, edge cases), then run them.
-2. **Everything around it:** run this repo's full suite and quality gates (below), not only the new tests. A change can break a caller far away.
-3. **Across repos:** when a feature spans repos (backend, frontend, desktop shell, document-server, identity-server, app-frontend, deployment), run the gates in *every* repo you touched, plus the tests that exercise the whole path end to end.
-4. **For real:** what automated tests cannot reach (UI behaviour, a running stack, long-lived connections, a deploy) is verified by running it: the local Docker stack (`LOCAL_DOCKER_GUIDE.md` at the workspace root), the desktop app, or the browser.
-5. **Match CI's toolchain:** CI uses the latest stable Rust/Node. A lint that passes on an older local toolchain can still fail there, so update (`rustup update`) or run the gate with CI's version before calling it done.
-6. **Report honestly:** say what you ran and its result. Anything you could not test is named, with the reason, and never presented as passing. A suite that silently skips (e.g. no database configured) is not a passing suite.
+A task is done when these pass. Do not run the full gate just to finish a task or to commit.
 
-**This repo's gate:** in `src-tauri/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`; plus the gate of every app repo you changed, run in its working copy (`pos/backend`, `pos/frontend`, `pos/document-server`). Shell behaviour (sidecars, sync agent, updater) is checked by running the app.
+1. **The feature itself:** add or extend automated tests for every behaviour you added or changed (happy path, failure paths, edge cases).
+2. **Run only the related tests**, not the whole suite: `cargo test --manifest-path src-tauri/Cargo.toml --lib <module path>` (or `--test <name>`), plus the related tests of every app repo you changed, run in its working copy.
+3. **Static checks:** `cargo fmt --manifest-path src-tauri/Cargo.toml`, then `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` once at the end of the task.
+4. **For real:** shell behaviour (sidecars, sync agent, updater) and anything else tests cannot reach is checked by running the app.
 
-**Run all of these before you say a task is finished** (a backend feature once reached CI with clippy errors, a permission that was too wide and undocumented routes, none of which a partial run catches):
+### Before a push (once)
 
-1. `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` on the current stable Rust (`rustup update` first). This is exactly what CI runs; `cargo clippy --fix --allow-dirty` clears most of it. `cargo build`/`cargo test` alone do not run clippy.
-2. `cargo fmt --manifest-path src-tauri/Cargo.toml --check` and the **whole** `cargo test` in `src-tauri/` (`--no-fail-fast`), plus the full gate of every app repo you changed (`pos/backend`, `pos/document-server`, `pos/frontend`), run in its working copy.
-3. Shell behaviour (sidecars, sync agent, updater) is checked by running the app, not only by tests.
+1. **Full gate**, in this repo: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings` and `cargo test --no-fail-fast` in `src-tauri/`, plus the full gate of every app repo you changed (`pos/backend`, `pos/document-server`, `pos/frontend`), run in its working copy.
+2. **Across repos:** when a feature spans repos (backend, frontend, desktop shell, document-server, identity-server, app-frontend, deployment), run the full gate in _every_ repo you touched, plus the tests that exercise the whole path end to end.
+3. **Match CI's toolchain:** CI uses the latest stable Rust/Node. A lint that passes on an older local toolchain can still fail there, so update (`rustup update`) or run the gate with CI's version.
 4. After pushing, watch the run (`gh run list --limit 3`, `gh run view <id> --log-failed`) until it is green. Pushing is a separate, deliberate step, so ask first.
+
+**Report honestly:** say what you ran and its result, and say when the full gate has not been run yet. Anything you could not test is named, with the reason, and never presented as passing. A suite that silently skips (e.g. no database configured) is not a passing suite.
 
 ## Repository layout (read before editing)
 
